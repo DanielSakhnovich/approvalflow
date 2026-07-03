@@ -49,16 +49,43 @@ def test_missing_correlation_id_is_minted():
     assert response.headers["X-Correlation-Id"] == minted_id
 
 
-def test_context_is_reset_after_request():
-    """After a request completes, assert correlation_id_var is reset to default."""
-    app = create_test_app()
-    client = TestClient(app)
+async def test_context_is_reset_after_request():
+    """After the middleware completes, correlation_id_var must be reset to default
+    in the SAME task/context that made the call.
 
-    # Before any request, correlation_id_var should be at default
+    This drives CorrelationIdMiddleware directly as ASGI (no TestClient, no thread
+    hop) so the assertion runs in the same context that the middleware's
+    `finally: reset(token)` executed in. Starlette's TestClient runs the app on a
+    separate anyio portal thread, so a ContextVar assertion made on the test's
+    MainThread after client.get() passes trivially regardless of whether the
+    middleware actually resets the var -- that version of this test was vacuous.
+    """
+
+    async def inner_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    app = CorrelationIdMiddleware(inner_app)
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(b"x-correlation-id", b"corr-reset-check")],
+        "query_string": b"",
+    }
+    received = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        received.append(message)
+
+    # Before the call, correlation_id_var should be at default in this context.
     assert correlation_id_var.get() == "-"
 
-    # Make a request with a correlation_id
-    client.get("/", headers={"X-Correlation-Id": "corr-test-reset"})
+    await app(scope, receive, send)
 
-    # After the request completes, the context should be reset to default
+    # After the middleware completes, the reset must have restored the default
+    # in THIS context -- the same context the middleware itself ran in.
     assert correlation_id_var.get() == "-"
