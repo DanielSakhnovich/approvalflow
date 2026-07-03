@@ -1,0 +1,19 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# node / ui
+node_modules/
+ui/dist/
+# env & secrets — never committed (D3)
+.env
+dapr/secrets.json
+# local working files (not part of the graded repo)
+knowledge/
+review.md
+.DS_Store
+.superpowers/
+.claude/settings.local.json
