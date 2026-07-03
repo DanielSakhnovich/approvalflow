@@ -63,10 +63,20 @@ class DaprStateStore:
         if etag is not None:
             entry["etag"] = etag
         resp = await self._client.post(self._url, json=[entry])
-        if resp.status_code in (409, 500) and etag is not None:
-            return False  # etag mismatch (Dapr surfaces as 409/500 depending on component)
         if resp.status_code == 409:
-            return False
+            return False  # standard etag-mismatch conflict
+        if resp.status_code == 500 and etag is not None:
+            # Dapr's Redis state component doesn't always surface an etag
+            # mismatch as 409 - it can return 500 with an "etag mismatch"
+            # style message in the body instead. Only treat a 500 as a CAS
+            # conflict when the body actually says so; otherwise a dead or
+            # misconfigured state store would silently masquerade as a
+            # conflict instead of failing loudly (M15). Task 5's compose
+            # smoke test characterizes real sidecar behavior against an
+            # actual Redis-backed component.
+            if "etag" in resp.text.lower():
+                return False
+            resp.raise_for_status()
         resp.raise_for_status()
         return True
 
