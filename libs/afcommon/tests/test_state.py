@@ -129,6 +129,26 @@ async def test_dapr_try_save_500_etag_mismatch_body_is_conflict():
     assert not await store.try_save("k", {"a": 1}, "some-etag")
 
 
+async def test_dapr_try_save_500_first_write_conflict_body_is_conflict():
+    # Observed against a real Dapr Redis sidecar (Task 5 compose smoke): a
+    # first-write-only save (etag=None) against an existing key comes back as
+    # 500 with a body that names the failed Lua "set key" call and never
+    # mentions "etag" at all.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={
+                "errorCode": "ERR_STATE_SAVE",
+                "message": "failed saving state in state store statestore: "
+                "failed to set key app||k: ERR user_script:14: failed to set "
+                "key app||k script: deadbeef, on @user_script:14.",
+            },
+        )
+
+    store = _dapr_store_with_transport(handler)
+    assert not await store.try_save("k", {"a": 1}, None)
+
+
 async def test_dapr_try_save_500_other_error_raises():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

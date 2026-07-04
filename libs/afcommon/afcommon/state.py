@@ -65,16 +65,24 @@ class DaprStateStore:
         resp = await self._client.post(self._url, json=[entry])
         if resp.status_code == 409:
             return False  # standard etag-mismatch conflict
-        if resp.status_code == 500 and etag is not None:
-            # Dapr's Redis state component doesn't always surface an etag
-            # mismatch as 409 - it can return 500 with an "etag mismatch"
-            # style message in the body instead. Only treat a 500 as a CAS
-            # conflict when the body actually says so; otherwise a dead or
-            # misconfigured state store would silently masquerade as a
-            # conflict instead of failing loudly (M15). Task 5's compose
-            # smoke test characterizes real sidecar behavior against an
-            # actual Redis-backed component.
-            if "etag" in resp.text.lower():
+        if resp.status_code == 500:
+            # Dapr's Redis state component runs both etag-CAS and
+            # first-write-only checks through the same conditional-set Lua
+            # script, and doesn't always surface a conflict as 409. Verified
+            # against a real Redis-backed sidecar (Task 5 compose smoke,
+            # scripts/smoke-compose.sh):
+            #   - stale-etag mismatch: observed as 409 (handled above), but
+            #     some deployments surface it as 500 with an "etag mismatch"
+            #     style message in the body instead.
+            #   - first-write-only (etag=None) against an existing key:
+            #     observed as 500 with a body like "failed to set key ...
+            #     script: ...", which does NOT mention "etag" at all.
+            # Both are genuine CAS conflicts and must return False. Only treat
+            # a 500 as a CAS conflict when the body actually says so;
+            # otherwise a dead or misconfigured state store would silently
+            # masquerade as a conflict instead of failing loudly (M15).
+            body = resp.text.lower()
+            if "etag" in body or "failed to set key" in body:
                 return False
             resp.raise_for_status()
         resp.raise_for_status()
