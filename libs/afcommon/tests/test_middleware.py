@@ -89,3 +89,8 @@ async def test_context_is_reset_after_request():
     # After the middleware completes, the reset must have restored the default
     # in THIS context -- the same context the middleware itself ran in.
     assert correlation_id_var.get() == "-"
+
+    # The response actually completed successfully through the middleware.
+    start_message = received[0]
+    assert start_message["type"] == "http.response.start"
+    assert start_message["status"] == 200
