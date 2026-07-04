@@ -9,6 +9,14 @@ Design: `docs/superpowers/specs/2026-07-03-approvalflow-design.md` · Decisions:
 
 Interactive version (light/dark themes): open [`docs/system-map.html`](docs/system-map.html) in a browser.
 
+## Service internals
+
+Each service on one card — what comes **in**, what happens **inside**, what goes **out**, with its tech stack and the state it owns:
+
+![ApprovalFlow service internals — one IN/INSIDE/OUT card per service with tech stack](docs/service-maps.png)
+
+Interactive version: open [`docs/service-maps.html`](docs/service-maps.html) in a browser.
+
 ## Run
 
 ```

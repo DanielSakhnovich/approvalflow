@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ApprovalFlow — Service Internals</title>
+<style>
+  :root {
+    --page: #F2F4F6;
+    --panel: #FFFFFF;
+    --panel-2: #E9EDF1;
+    --ink: #1C2530;
+    --ink-2: #55636F;
+    --line: #B9C4CD;
+    --brand: #0F6B5C;
+    --brand-soft: #E2EFEC;
+    --auto: #1C7A54;   --auto-soft: #E3F1E9;
+    --human: #A2690E;  --human-soft: #F6EDDC;
+    --rejectc: #B23B36; --reject-soft: #F6E4E2;
+    --dup: #6D5BB8;    --dup-soft: #EBE7F6;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --serif: Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #10161D; --panel: #1A222C; --panel-2: #141B23;
+      --ink: #E8EDF2; --ink-2: #93A1AE; --line: #3A4653;
+      --brand: #4FB39E; --brand-soft: #16302B;
+      --auto: #52B584; --auto-soft: #16301F;
+      --human: #D9A24A; --human-soft: #332510;
+      --rejectc: #DE7A72; --reject-soft: #351A18;
+      --dup: #A493E8; --dup-soft: #241E3C;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page: #10161D; --panel: #1A222C; --panel-2: #141B23;
+    --ink: #E8EDF2; --ink-2: #93A1AE; --line: #3A4653;
+    --brand: #4FB39E; --brand-soft: #16302B;
+    --auto: #52B584; --auto-soft: #16301F;
+    --human: #D9A24A; --human-soft: #332510;
+    --rejectc: #DE7A72; --reject-soft: #351A18;
+    --dup: #A493E8; --dup-soft: #241E3C;
+  }
+  :root[data-theme="light"] {
+    --page: #F2F4F6; --panel: #FFFFFF; --panel-2: #E9EDF1;
+    --ink: #1C2530; --ink-2: #55636F; --line: #B9C4CD;
+    --brand: #0F6B5C; --brand-soft: #E2EFEC;
+    --auto: #1C7A54; --auto-soft: #E3F1E9;
+    --human: #A2690E; --human-soft: #F6EDDC;
+    --rejectc: #B23B36; --reject-soft: #F6E4E2;
+    --dup: #6D5BB8; --dup-soft: #EBE7F6;
+  }
+
+  body {
+    background: var(--page); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+    margin: 0; padding: 40px 20px 72px;
+  }
+  main { max-width: 1000px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--brand); margin: 0 0 10px;
+  }
+  h1 {
+    font-family: var(--serif); font-weight: 600; font-size: 32px;
+    line-height: 1.15; margin: 0 0 10px; text-wrap: balance;
+  }
+  .lede { color: var(--ink-2); max-width: 64ch; margin: 0 0 6px; }
+  .howto {
+    display: grid; grid-template-columns: auto auto auto; gap: 10px;
+    justify-content: start; align-items: center; margin: 18px 0 8px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .howto span { border: 1px dashed var(--line); border-radius: 6px; padding: 4px 10px; }
+  .howto em { font-style: normal; color: var(--brand); }
+
+  code {
+    font-family: var(--mono); font-size: 0.9em;
+    background: var(--panel-2); border-radius: 4px; padding: 1px 5px;
+  }
+
+  /* ---------- service card ---------- */
+  .svc {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; margin-top: 28px; overflow: hidden;
+  }
+  .svc header {
+    padding: 16px 18px 12px; border-bottom: 1px solid var(--line);
+    display: grid; gap: 8px;
+  }
+  .svc .titlerow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+  .svc h2 { font-family: var(--serif); font-weight: 600; font-size: 21px; margin: 0; }
+  .svc .duty { color: var(--ink-2); font-size: 13.5px; }
+  .stack { display: flex; flex-wrap: wrap; gap: 6px; }
+  .stack .t {
+    font-family: var(--mono); font-size: 10.5px; color: var(--brand);
+    background: var(--brand-soft); border-radius: 4px; padding: 2px 7px;
+  }
+  .stack .t.dim { color: var(--ink-2); background: var(--panel-2); }
+
+  .cols {
+    display: grid; grid-template-columns: 1fr 1.35fr 1fr; gap: 0;
+  }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+  .col { padding: 14px 16px; }
+  .col + .col { border-left: 1px dashed var(--line); }
+  @media (max-width: 760px) { .col + .col { border-left: none; border-top: 1px dashed var(--line); } }
+  .col h3 {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--ink-2); margin: 0 0 10px;
+  }
+  .col h3 b { color: var(--brand); }
+
+  .io { display: grid; gap: 8px; }
+  .io .item {
+    font-size: 12.5px; color: var(--ink-2);
+    background: var(--panel-2); border-radius: 6px; padding: 7px 10px;
+  }
+  .io .item b { color: var(--ink); font-weight: 600; }
+  .io .item.evt { background: transparent; border: 1px dashed var(--line); }
+  .io .item.evt code { background: transparent; padding: 0; color: var(--brand); font-weight: 600; }
+
+  .steps { display: grid; gap: 6px; }
+  .steps .s {
+    display: grid; grid-template-columns: 18px 1fr; gap: 8px; align-items: baseline;
+    font-size: 12.5px; color: var(--ink-2);
+  }
+  .steps .s i {
+    font-style: normal; font-family: var(--mono); font-size: 10.5px;
+    color: var(--brand); text-align: right;
+  }
+  .steps .s b { color: var(--ink); font-weight: 600; }
+
+  .svc footer {
+    border-top: 1px solid var(--line); padding: 9px 18px;
+    font-size: 11.5px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 14px;
+    background: var(--panel-2);
+  }
+  .svc footer .own { font-family: var(--mono); }
+  .svc footer .reqs { margin-left: auto; font-family: var(--mono); color: var(--brand); }
+
+  /* route pills inside decision */
+  .pills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+  .pill { font-family: var(--mono); font-size: 10px; font-weight: 700; border-radius: 4px; padding: 2px 6px; }
+  .pill.auto { color: var(--auto); background: var(--auto-soft); }
+  .pill.human { color: var(--human); background: var(--human-soft); }
+  .pill.reject { color: var(--rejectc); background: var(--reject-soft); }
+  .pill.dup { color: var(--dup); background: var(--dup-soft); }
+
+  .edge-note {
+    margin-top: 34px; border-top: 1px solid var(--line); padding-top: 16px;
+  }
+  .edge-note h2 { font-family: var(--serif); font-size: 18px; margin: 0 0 10px; }
+  .edges { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 760px) { .edges { grid-template-columns: 1fr; } }
+  .edge-card {
+    border: 1px dashed var(--line); border-radius: 8px; padding: 12px 14px;
+    font-size: 12.5px; color: var(--ink-2); background: transparent;
+  }
+  .edge-card b { color: var(--ink); }
+  .edge-card .stack { margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<main>
+  <p class="eyebrow">ApprovalFlow · Service Internals</p>
+  <h1>Each service, one card</h1>
+  <p class="lede">Every card reads the same way: what reaches the service, what it does with it,
+  and what leaves it. Chips under the name are that service's tech stack; the footer names the
+  state it owns — and no other service may touch that state (events only).</p>
+  <div class="howto">
+    <span><em>IN</em> — endpoints &amp; subscribed events</span>
+    <span><em>INSIDE</em> — what it does, in order</span>
+    <span><em>OUT</em> — responses &amp; published events</span>
+  </div>
+
+  <!-- ================ INTAKE ================ -->
+  <section class="svc">
+    <header>
+      <div class="titlerow"><h2>Intake</h2><span class="duty">the front door — owns every invoice record and its status</span></div>
+      <div class="stack">
+        <span class="t">Python 3.12</span><span class="t">FastAPI</span><span class="t">pydantic v2</span>
+        <span class="t">afcommon</span><span class="t dim">Dapr: pub/sub · state · service invocation</span><span class="t dim">Redis via Dapr</span>
+      </div>
+    </header>
+    <div class="cols">
+      <div class="col"><h3><b>IN</b> · HTTP + events</h3>
+        <div class="io">
+          <div class="item"><b>POST /api/invoices</b> — new submission (validated by pydantic)</div>
+          <div class="item"><b>GET /api/invoices/{id}</b> — status + plain-language reason; <code>?trail=true</code> adds the audit trail</div>
+          <div class="item"><b>PUT /api/invoices/{id}</b> — resubmit after “send back for more info”</div>
+          <div class="item"><b>GET /api/dashboard</b> — auto vs human rates, money totals</div>
+          <div class="item evt">subscribes <code>all five events</code> — to keep every status current</div>
+        </div>
+      </div>
+      <div class="col"><h3>INSIDE</h3>
+        <div class="steps">
+          <div class="s"><i>1</i><span><b>Acknowledge instantly:</b> mint tracking id + correlation id, store the record, reply <code>202</code> — processing never blocks the submitter</span></div>
+          <div class="s"><i>2</i><span><b>Run the status state machine:</b> submitted → evaluating → … → paid / rejected / duplicate / payment-failed, driven only by events</span></div>
+          <div class="s"><i>3</i><span><b>Keep dashboard counters</b> per outcome and amount</span></div>
+          <div class="s"><i>4</i><span><b>Compose the trail view:</b> one sync Dapr call to Audit when asked with <code>?trail=true</code></span></div>
+        </div>
+      </div>
+      <div class="col"><h3>OUT</h3>
+        <div class="io">
+          <div class="item"><b>202 Accepted</b> + tracking id, immediately</div>
+          <div class="item evt">publishes <code>invoice-submitted</code></div>
+          <div class="item"><b>Status responses</b> with the decision's human-readable reasoning</div>
+        </div>
+      </div>
+    </div>
+    <footer><span class="own">owns: invoice records · status · dashboard counters</span><span class="reqs">F1 F2 M8</span></footer>
+  </section>
+
+  <!-- ================ DECISION ================ -->
+  <section class="svc">
+    <header>
+      <div class="titlerow"><h2>Decision</h2><span class="duty">the brain — AI recommends, deterministic router decides</span></div>
+      <div class="stack">
+        <span class="t">Python 3.12</span><span class="t">FastAPI</span><span class="t">OpenRouter LLM</span>
+        <span class="t">DecisionAgent port — swappable: handrolled / stub</span>
+        <span class="t">policy.md rules</span><span class="t dim">Dapr: pub/sub · state · secrets</span>
+      </div>
+    </header>
+    <div class="cols">
+      <div class="col"><h3><b>IN</b> · events + config</h3>
+        <div class="io">
+          <div class="item evt">subscribes <code>invoice-submitted</code> — every new invoice</div>
+          <div class="item evt">subscribes <code>payment-completed</code> — to record which vendors earned trust</div>
+          <div class="item"><b>PUT /api/config/thresholds</b> — controller tunes ceiling/confidence at runtime, no redeploy</div>
+        </div>
+      </div>
+      <div class="col"><h3>INSIDE</h3>
+        <div class="steps">
+          <div class="s"><i>1</i><span><b>Gate 1 — duplicate?</b> fingerprint (vendor + invoice № + total), atomic first-write. A duplicate stops here: the LLM is never called</span></div>
+          <div class="s"><i>2</i><span><b>Gate 2 — hard facts, no AI:</b> currency → USD, line-item math, receipt, known vendor, required info, travel &gt; $1,500</span></div>
+          <div class="s"><i>3</i><span><b>Ask the agent (the only LLM step):</b> relevant policy rules in → recommendation, confidence, violations, plain-language reasoning out. Provider down? Escalate to a human — never guess</span></div>
+          <div class="s"><i>4</i><span><b>Gate 3 — the router (~40 lines of pure code)</b> combines it all. The agent can lower an outcome, never raise it</span></div>
+        </div>
+        <div class="pills"><span class="pill auto">AUTO-APPROVE</span><span class="pill human">HUMAN REVIEW</span><span class="pill reject">REJECT</span><span class="pill dup">DUPLICATE</span></div>
+      </div>
+      <div class="col"><h3>OUT</h3>
+        <div class="io">
+          <div class="item evt">publishes <code>decision-made</code> — one event whatever the route, carrying the route, the agent's rationale, the amount, and the ceiling used</div>
+        </div>
+      </div>
+    </div>
+    <footer><span class="own">owns: dedupe fingerprints · thresholds config · vendor trust history</span><span class="reqs">F6 M12 M13 M15</span></footer>
+  </section>
+
+  <!-- ================ APPROVAL ================ -->
+  <section class="svc">
+    <header>
+      <div class="titlerow"><h2>Approval</h2><span class="duty">human-in-the-loop — a pause that survives anything</span></div>
+      <div class="stack">
+        <span class="t">Python 3.12</span><span class="t">FastAPI</span><span class="t">afcommon</span>
+        <span class="t dim">Dapr: pub/sub · state</span><span class="t dim">no timers · no workers · no memory queues</span>
+      </div>
+    </header>
+    <div class="cols">
+      <div class="col"><h3><b>IN</b> · events + approver actions</h3>
+        <div class="io">
+          <div class="item evt">subscribes <code>decision-made</code> — only <code>human_review</code> routes</div>
+          <div class="item"><b>GET /api/approvals/queue</b> — escalated items with the agent's recommendation, confidence, cited rules</div>
+          <div class="item"><b>POST /api/approvals/{id}/verdict</b> — approve / reject / send back, one action</div>
+        </div>
+      </div>
+      <div class="col"><h3>INSIDE</h3>
+        <div class="steps">
+          <div class="s"><i>1</i><span><b>The pause is a record:</b> escalation written to the state store — nothing waits in memory, so a restart can't lose it</span></div>
+          <div class="s"><i>2</i><span><b>Queue index</b> updated atomically, so concurrent escalations never drop an entry</span></div>
+          <div class="s"><i>3</i><span><b>Verdict applies exactly once:</b> compare-and-swap on “still pending” — double-clicks and retries have one effect</span></div>
+          <div class="s"><i>4</i><span><b>Records who decided and when</b> — the audit trail's “final call” answer</span></div>
+        </div>
+      </div>
+      <div class="col"><h3>OUT</h3>
+        <div class="io">
+          <div class="item evt">publishes <code>approval-resolved</code> — approved / rejected / needs-info; the flow resumes exactly where it paused</div>
+        </div>
+      </div>
+    </div>
+    <footer><span class="own">owns: escalation records · pending queue index</span><span class="reqs">F4 F5 M11</span></footer>
+  </section>
+
+  <!-- ================ PAYMENT ================ -->
+  <section class="svc">
+    <header>
+      <div class="titlerow"><h2>Payment</h2><span class="duty">the money — a saga where every step has an undo</span></div>
+      <div class="stack">
+        <span class="t">Python 3.12</span><span class="t">FastAPI</span><span class="t">integer cents — no floats</span>
+        <span class="t">PaymentSaga (persisted step-marker)</span><span class="t">mock PaymentProvider</span><span class="t dim">Dapr: pub/sub · state</span>
+      </div>
+    </header>
+    <div class="cols">
+      <div class="col"><h3><b>IN</b> · events</h3>
+        <div class="io">
+          <div class="item evt">subscribes <code>decision-made</code> — <code>auto_approve</code> routes</div>
+          <div class="item evt">subscribes <code>approval-resolved</code> — human-approved items</div>
+        </div>
+      </div>
+      <div class="col"><h3>INSIDE</h3>
+        <div class="steps">
+          <div class="s"><i>0</i><span><b>Guards first:</b> already processed? skip (idempotent). Auto-approved? independently re-check amount ≤ ceiling — a second service must also be wrong for money to move</span></div>
+          <div class="s"><i>1</i><span><b>Reserve budget</b> by atomic compare-and-swap — two concurrent approvals can never overspend a department budget</span></div>
+          <div class="s"><i>2</i><span><b>Execute payment</b> (mock provider; test fixtures can force a failure — only when the injection flag is on)</span></div>
+          <div class="s"><i>3</i><span><b>On failure — compensate:</b> release the reservation, mark it, tell everyone. No orphaned money, ever</span></div>
+          <div class="s"><i>4</i><span><b>Crash-safe:</b> the saga's progress is a stored record; after a restart it resumes or rolls back from exactly where it stopped</span></div>
+        </div>
+      </div>
+      <div class="col"><h3>OUT</h3>
+        <div class="io">
+          <div class="item evt">publishes <code>payment-completed</code> — amount + remaining budget</div>
+          <div class="item evt">publishes <code>payment-failed</code> — with <code>compensated: true</code></div>
+        </div>
+      </div>
+    </div>
+    <footer><span class="own">owns: department budgets · reservations · saga records</span><span class="reqs">F3 M9 M10 M12</span></footer>
+  </section>
+
+  <!-- ================ AUDIT ================ -->
+  <section class="svc">
+    <header>
+      <div class="titlerow"><h2>Audit</h2><span class="duty">the memory — an immutable trail nobody can edit</span></div>
+      <div class="stack">
+        <span class="t">Python 3.12</span><span class="t">FastAPI</span><span class="t">append-only trail</span>
+        <span class="t dim">Dapr: pub/sub · state · service invocation (server)</span>
+      </div>
+    </header>
+    <div class="cols">
+      <div class="col"><h3><b>IN</b> · everything</h3>
+        <div class="io">
+          <div class="item evt">subscribes <code>all five events</code> — every step of every invoice</div>
+          <div class="item"><b>GET /trail/{correlationId}</b> — called by Intake via Dapr service invocation (the system's one sync service-to-service call)</div>
+        </div>
+      </div>
+      <div class="col"><h3>INSIDE</h3>
+        <div class="steps">
+          <div class="s"><i>1</i><span><b>Append, never overwrite:</b> each event lands as a timestamped entry under its correlation id</span></div>
+          <div class="s"><i>2</i><span><b>One id tells the whole story:</b> extracted data → rules applied → the agent's reasoning → who made the final call → what was paid</span></div>
+          <div class="s"><i>3</i><span><b>Proves the ceiling held:</b> every auto-approval stores the amount <em>and</em> the ceiling in force at decision time — the auditor checks evidence, not trust</span></div>
+        </div>
+      </div>
+      <div class="col"><h3>OUT</h3>
+        <div class="io">
+          <div class="item"><b>The complete decision trail</b> for any invoice, ready for an auditor or the UI's timeline view</div>
+        </div>
+      </div>
+    </div>
+    <footer><span class="own">owns: the audit trail (append-only)</span><span class="reqs">F9 F10 M14</span></footer>
+  </section>
+
+  <!-- ================ NOTIFICATION ================ -->
+  <section class="svc">
+    <header>
+      <div class="titlerow"><h2>Notification</h2><span class="duty">the messenger — reused from the earlier course task, hardened</span></div>
+      <div class="stack">
+        <span class="t">Python 3.12</span><span class="t">reused HW3 codebase + its test suite</span>
+        <span class="t">channels: email · SMS · push (mocked)</span><span class="t">retry with cap</span>
+        <span class="t dim">in-memory store (transient by design)</span><span class="t dim">Dapr: pub/sub</span>
+      </div>
+    </header>
+    <div class="cols">
+      <div class="col"><h3><b>IN</b> · outcomes</h3>
+        <div class="io">
+          <div class="item evt">subscribes <code>decision-made</code> — escalations &amp; rejections worth telling the submitter about</div>
+          <div class="item evt">subscribes <code>payment-completed</code> / <code>payment-failed</code> — final outcomes</div>
+          <div class="item"><b>REST API</b> — list / fetch / update notifications (the original service's surface)</div>
+        </div>
+      </div>
+      <div class="col"><h3>INSIDE</h3>
+        <div class="steps">
+          <div class="s"><i>1</i><span><b>Event → notification:</b> outcome events become messages with the plain-language reason</span></div>
+          <div class="s"><i>2</i><span><b>Channel routing</b> per target (email / SMS / push), with validation</span></div>
+          <div class="s"><i>3</i><span><b>Delivery with capped retries</b> — a failing channel can't loop forever</span></div>
+        </div>
+      </div>
+      <div class="col"><h3>OUT</h3>
+        <div class="io">
+          <div class="item"><b>The submitter hears the result</b> — delivered via mocked providers (no real email is sent in the demo)</div>
+        </div>
+      </div>
+    </div>
+    <footer><span class="own">owns: notification records (in-memory — the one documented exception to “state lives in Redis”)</span><span class="reqs">M8</span></footer>
+  </section>
+
+  <!-- ================ EDGES ================ -->
+  <div class="edge-note">
+    <h2>Not microservices, but part of every request</h2>
+    <div class="edges">
+      <div class="edge-card"><b>API Gateway</b> — the single way in: routes <code>/api/*</code> to services,
+        rate-limits every client, and serves the UI's static files. Config only — zero code to maintain.
+        <div class="stack"><span class="t dim">nginx</span><span class="t dim">limit_req rate limiting</span><span class="t dim">static file serving</span></div>
+      </div>
+      <div class="edge-card"><b>Browser UI</b> — submit an expense, watch its status timeline, work the
+        approver queue with the agent's rationale, tune thresholds, read the dashboard.
+        <div class="stack"><span class="t dim">React</span><span class="t dim">Vite</span><span class="t dim">built once → served by nginx</span></div>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>
