@@ -1,0 +1,375 @@
+<title>ApprovalFlow — System Map</title>
+<style>
+  :root {
+    --page: #F2F4F6;
+    --panel: #FFFFFF;
+    --panel-2: #E9EDF1;
+    --ink: #1C2530;
+    --ink-2: #55636F;
+    --line: #B9C4CD;
+    --brand: #0F6B5C;
+    --brand-soft: #E2EFEC;
+    --auto: #1C7A54;   --auto-soft: #E3F1E9;
+    --human: #A2690E;  --human-soft: #F6EDDC;
+    --rejectc: #B23B36; --reject-soft: #F6E4E2;
+    --dup: #6D5BB8;    --dup-soft: #EBE7F6;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --serif: Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #10161D; --panel: #1A222C; --panel-2: #141B23;
+      --ink: #E8EDF2; --ink-2: #93A1AE; --line: #3A4653;
+      --brand: #4FB39E; --brand-soft: #16302B;
+      --auto: #52B584; --auto-soft: #16301F;
+      --human: #D9A24A; --human-soft: #332510;
+      --rejectc: #DE7A72; --reject-soft: #351A18;
+      --dup: #A493E8; --dup-soft: #241E3C;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page: #10161D; --panel: #1A222C; --panel-2: #141B23;
+    --ink: #E8EDF2; --ink-2: #93A1AE; --line: #3A4653;
+    --brand: #4FB39E; --brand-soft: #16302B;
+    --auto: #52B584; --auto-soft: #16301F;
+    --human: #D9A24A; --human-soft: #332510;
+    --rejectc: #DE7A72; --reject-soft: #351A18;
+    --dup: #A493E8; --dup-soft: #241E3C;
+  }
+  :root[data-theme="light"] {
+    --page: #F2F4F6; --panel: #FFFFFF; --panel-2: #E9EDF1;
+    --ink: #1C2530; --ink-2: #55636F; --line: #B9C4CD;
+    --brand: #0F6B5C; --brand-soft: #E2EFEC;
+    --auto: #1C7A54; --auto-soft: #E3F1E9;
+    --human: #A2690E; --human-soft: #F6EDDC;
+    --rejectc: #B23B36; --reject-soft: #F6E4E2;
+    --dup: #6D5BB8; --dup-soft: #EBE7F6;
+  }
+
+  body {
+    background: var(--page); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+    margin: 0; padding: 40px 20px 72px;
+  }
+  main { max-width: 960px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--brand); margin: 0 0 10px;
+  }
+  h1 {
+    font-family: var(--serif); font-weight: 600; font-size: 34px;
+    line-height: 1.15; margin: 0 0 10px; text-wrap: balance;
+  }
+  .lede { color: var(--ink-2); max-width: 62ch; margin: 0 0 14px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-2);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+    background: var(--panel);
+  }
+
+  h2 {
+    font-family: var(--serif); font-weight: 600; font-size: 22px;
+    margin: 52px 0 6px;
+  }
+  .sub { color: var(--ink-2); margin: 0 0 20px; max-width: 68ch; }
+
+  /* ---------- container map ---------- */
+  .maprow { display: grid; gap: 10px; }
+  .edge {
+    display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+    gap: 10px; margin: 2px 0;
+  }
+  .edge .lbl {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    text-align: center; white-space: nowrap; padding: 0 4px;
+  }
+  .edge .rule { height: 0; border-top: 2px solid var(--line); }
+  .edge.dashed .rule { border-top-style: dashed; }
+
+  .node {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 14px;
+  }
+  .node .name { font-weight: 600; }
+  .node .duty { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+  .node .tag {
+    float: right; font-family: var(--mono); font-size: 10.5px;
+    color: var(--brand); background: var(--brand-soft);
+    border-radius: 4px; padding: 2px 6px; margin-left: 8px;
+  }
+  .toprow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .svcgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  @media (max-width: 720px) {
+    .svcgrid { grid-template-columns: 1fr; }
+    .toprow { grid-template-columns: 1fr; }
+  }
+  .infra {
+    background: var(--panel-2); border: 1px dashed var(--line);
+    border-radius: 8px; padding: 10px 14px; text-align: center;
+    color: var(--ink-2); font-size: 13px;
+  }
+  .infra b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- vertical flow ---------- */
+  .flow { display: grid; justify-items: stretch; }
+  .step {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px; position: relative;
+  }
+  .step .k {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--brand); display: block; margin-bottom: 4px;
+  }
+  .step h3 { margin: 0 0 4px; font-size: 16px; font-family: var(--sans); font-weight: 650; }
+  .step p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+  .step .req {
+    float: right; font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; margin-left: 10px;
+  }
+  code {
+    font-family: var(--mono); font-size: 0.92em;
+    background: var(--panel-2); border-radius: 4px; padding: 1px 5px;
+  }
+
+  .conn { display: grid; justify-items: center; padding: 2px 0; }
+  .conn .wire { width: 0; height: 22px; border-left: 2px solid var(--line); }
+  .conn.dashed .wire { border-left-style: dashed; }
+  .conn .evt {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    padding: 1px 0 2px;
+  }
+  .conn .evt b { color: var(--brand); font-weight: 600; }
+
+  /* decision internals */
+  .gates { display: grid; gap: 8px; margin-top: 10px; }
+  .gate {
+    display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: baseline;
+    background: var(--panel-2); border-radius: 6px; padding: 8px 12px; font-size: 13px;
+  }
+  .gate .gk { font-family: var(--mono); font-size: 11px; color: var(--brand); white-space: nowrap; }
+  .gate.agent { border: 1px dashed var(--line); background: transparent; }
+  .verdict {
+    margin-top: 10px; font-size: 13px; color: var(--ink-2);
+    border-left: 3px solid var(--brand); padding: 2px 0 2px 10px;
+  }
+
+  /* routes branch */
+  .bus { height: 22px; border-left: 2px solid var(--line); width: 0; margin: 0 auto; }
+  .routes {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    border-top: 2px solid var(--line); padding-top: 14px; position: relative;
+  }
+  @media (max-width: 720px) { .routes { grid-template-columns: 1fr 1fr; } }
+  .route {
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    background: var(--panel); display: grid; grid-template-rows: auto 1fr;
+  }
+  .route .head {
+    font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+    padding: 6px 10px; letter-spacing: 0.04em;
+  }
+  .route .body { padding: 8px 10px 10px; font-size: 12.5px; color: var(--ink-2); }
+  .route.auto .head { background: var(--auto-soft); color: var(--auto); }
+  .route.human .head { background: var(--human-soft); color: var(--human); }
+  .route.reject .head { background: var(--reject-soft); color: var(--rejectc); }
+  .route.dup .head { background: var(--dup-soft); color: var(--dup); }
+
+  /* HITL + saga strips */
+  .strip {
+    display: grid; grid-template-columns: 1fr auto 1fr auto 1fr;
+    align-items: stretch; gap: 0; margin-top: 10px;
+  }
+  @media (max-width: 720px) { .strip { grid-template-columns: 1fr; } .strip .arrow { transform: rotate(90deg); margin: 2px auto; } }
+  .strip .cell {
+    background: var(--panel-2); border-radius: 6px; padding: 10px 12px; font-size: 12.5px;
+  }
+  .strip .cell b { display: block; font-size: 13px; color: var(--ink); }
+  .strip .cell span { color: var(--ink-2); }
+  .strip .arrow {
+    align-self: center; color: var(--ink-2); font-family: var(--mono);
+    padding: 0 8px; font-size: 13px;
+  }
+  .comp {
+    margin-top: 8px; border: 1px dashed var(--rejectc); border-radius: 6px;
+    padding: 8px 12px; font-size: 12.5px; color: var(--ink-2); background: var(--reject-soft);
+  }
+  .comp b { color: var(--rejectc); }
+
+  .always {
+    margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  }
+  @media (max-width: 720px) { .always { grid-template-columns: 1fr; } }
+  .always .cell {
+    border: 1px dashed var(--line); border-radius: 8px; padding: 10px 12px;
+    font-size: 12.5px; color: var(--ink-2); background: transparent;
+  }
+  .always b { color: var(--ink); }
+
+  /* dilemma card */
+  .dilemma {
+    background: var(--brand-soft); border: 1px solid var(--brand);
+    border-radius: 8px; padding: 14px 16px; margin-top: 12px;
+  }
+  .dilemma h3 { margin: 0 0 6px; font-family: var(--serif); font-size: 16px; }
+  .dilemma ul { margin: 0; padding-left: 18px; font-size: 13.5px; }
+  .dilemma li { margin: 3px 0; }
+  .dilemma .n { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* legend */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 16px; margin-top: 40px;
+    border-top: 1px solid var(--line); padding-top: 14px;
+    font-size: 12.5px; color: var(--ink-2);
+  }
+  .legend .item { display: flex; align-items: center; gap: 7px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .lw { width: 26px; border-top: 2px solid var(--line); display: inline-block; }
+  .lw.d { border-top-style: dashed; }
+</style>
+
+<main>
+  <p class="eyebrow">ApprovalFlow · Invoice &amp; Expense Approval Platform</p>
+  <h1>How an invoice becomes a decision</h1>
+  <p class="lede">An AI agent reads every invoice against company policy and <em>recommends</em>.
+  A deterministic router <em>decides</em> — so the safe majority is paid automatically and the
+  risky minority always reaches a human. Every step is auditable by one correlation id.</p>
+  <div class="chips">
+    <span class="chip">6 microservices</span>
+    <span class="chip">Dapr sidecars · pub/sub + state + secrets</span>
+    <span class="chip">docker compose up — one command</span>
+    <span class="chip">Python · FastAPI · Redis · React</span>
+  </div>
+
+  <h2>The system at a glance</h2>
+  <p class="sub">One way in through the gateway; services talk to each other only through events
+  (dashed) plus a single sync call for the audit trail view. All state lives in Redis via Dapr.</p>
+
+  <div class="maprow">
+    <div class="toprow">
+      <div class="node"><span class="tag">React SPA</span><div class="name">Browser UI</div>
+        <div class="duty">Submit an expense · track status · approver queue · dashboard</div></div>
+      <div class="node"><span class="tag">nginx</span><div class="name">API Gateway</div>
+        <div class="duty">Single entry point · rate limiting · serves the UI</div></div>
+    </div>
+
+    <div class="edge"><div class="rule"></div><div class="lbl">HTTP (sync)</div><div class="rule"></div></div>
+
+    <div class="svcgrid">
+      <div class="node"><span class="tag">owns invoices</span><div class="name">Intake</div>
+        <div class="duty">Accepts submissions — instant <code>202</code> + tracking id; status &amp; dashboard</div></div>
+      <div class="node"><span class="tag">agent + router</span><div class="name">Decision</div>
+        <div class="duty">Checks policy, asks the AI, routes: pay, human, reject, duplicate</div></div>
+      <div class="node"><span class="tag">human-in-the-loop</span><div class="name">Approval</div>
+        <div class="duty">Escalation queue; pause &amp; resume survive restarts</div></div>
+      <div class="node"><span class="tag">money + saga</span><div class="name">Payment</div>
+        <div class="duty">Reserves budget, pays, rolls back on failure — never overspends</div></div>
+      <div class="node"><span class="tag">compliance</span><div class="name">Audit</div>
+        <div class="duty">Immutable trail of every event, per correlation id</div></div>
+      <div class="node"><span class="tag">reused service</span><div class="name">Notification</div>
+        <div class="duty">Tells the submitter the outcome (email / SMS / push)</div></div>
+    </div>
+
+    <div class="edge dashed"><div class="rule"></div><div class="lbl">events (async, at-least-once)</div><div class="rule"></div></div>
+
+    <div class="infra"><b>Dapr sidecars</b> next to every service &nbsp;·&nbsp; <b>Redis</b> — state store + pub/sub broker &nbsp;·&nbsp; secrets from a local Dapr secret store</div>
+  </div>
+
+  <h2>The life of an invoice</h2>
+  <p class="sub">Follow one submission top to bottom. Solid lines are synchronous calls;
+  dashed lines are published events any service can subscribe to.</p>
+
+  <div class="flow">
+    <div class="step">
+      <span class="req">F1 · M8</span><span class="k">1 — Submit</span>
+      <h3>POST /api/invoices → <code>202 Accepted</code> + tracking id</h3>
+      <p>The submitter never waits on processing. Duplicates get a tracking id too — they're caught later, not bounced at the door.</p>
+    </div>
+
+    <div class="conn dashed"><div class="wire"></div><div class="evt"><b>invoice-submitted</b></div><div class="wire"></div></div>
+
+    <div class="step">
+      <span class="req">M12 · M13</span><span class="k">2 — Decide</span>
+      <h3>Decision service: three gates, one verdict</h3>
+      <div class="gates">
+        <div class="gate"><span class="gk">GATE 1</span><span>Duplicate fingerprint (vendor + invoice № + total) — already paid once? Stop here; the AI is never even called.</span></div>
+        <div class="gate"><span class="gk">GATE 2</span><span>Deterministic checks, no AI: currency → USD, line-item math, receipt present, vendor known, required info, travel &gt; $1,500.</span></div>
+        <div class="gate agent"><span class="gk">AI AGENT</span><span>The only LLM step. Reads the relevant policy rules and returns a <em>recommendation</em>: verdict, confidence, violated rules, plain-language reasoning.</span></div>
+        <div class="gate"><span class="gk">GATE 3</span><span><b>The router — pure code, ~40 lines.</b> Combines gates + recommendation into the final route below.</span></div>
+      </div>
+      <div class="verdict">The agent can make the outcome <em>more</em> cautious, never less: even an agent
+      screaming “approve, confidence 1.0” cannot push money past a single guard.</div>
+    </div>
+
+    <div class="bus"></div>
+
+    <div class="routes">
+      <div class="route auto"><div class="head">AUTO-APPROVE</div>
+        <div class="body">In policy, under the ceiling, high confidence, no red flags → straight to payment. No human touches it.</div></div>
+      <div class="route human"><div class="head">HUMAN REVIEW</div>
+        <div class="body">Over the ceiling, low confidence, or any hard stop → approver queue with the agent's full rationale.</div></div>
+      <div class="route reject"><div class="head">REJECT</div>
+        <div class="body">Clear policy violation (e.g. alcohol-only receipt) → rejected with a plain-language reason.</div></div>
+      <div class="route dup"><div class="head">DUPLICATE</div>
+        <div class="body">Same vendor + invoice № + total as a processed item → never paid twice.</div></div>
+    </div>
+
+    <div class="conn dashed"><div class="wire"></div><div class="evt"><b>decision-made</b> — one event, whatever the route</div><div class="wire"></div></div>
+
+    <div class="step">
+      <span class="req">F4 · F5 · M11</span><span class="k">3 — Pause for a human (only when needed)</span>
+      <h3>Approval service: the pause is a record, not a process</h3>
+      <p>An escalated invoice becomes a durable record in the state store. Restart every container —
+      the queue is intact. One approver action (approve / reject / send back) publishes
+      <code>approval-resolved</code> and the flow resumes exactly where it paused.</p>
+    </div>
+
+    <div class="conn dashed"><div class="wire"></div><div class="evt"><b>approval-resolved</b> · approved items join the auto-approved lane</div><div class="wire"></div></div>
+
+    <div class="step">
+      <span class="req">M9 · M10</span><span class="k">4 — Pay, or roll back cleanly</span>
+      <h3>Payment saga — every step has an undo</h3>
+      <div class="strip">
+        <div class="cell"><b>Reserve budget</b><span>atomic compare-and-swap on the department budget — two concurrent approvals can never overspend it</span></div>
+        <div class="arrow">→</div>
+        <div class="cell"><b>Execute payment</b><span>idempotency key = invoice id, so a retry can't pay twice</span></div>
+        <div class="arrow">→</div>
+        <div class="cell"><b>Paid ✓</b><span><code>payment-completed</code> published; vendor earns trust for next time</span></div>
+      </div>
+      <div class="comp"><b>On failure ↩</b> compensation releases the reservation and publishes
+      <code>payment-failed (compensated: true)</code> — no orphaned money, no partial state.</div>
+    </div>
+
+    <div class="always">
+      <div class="cell"><b>Audit — subscribed to everything.</b> Every event lands in an immutable
+      per-invoice trail: data extracted, rules applied, the agent's reasoning, who decided, what was paid.
+      One correlation id ties it together end-to-end.</div>
+      <div class="cell"><b>Notification — subscribed to outcomes.</b> The submitter hears the result
+      (with the plain-language reason) over email / SMS / push — the notification service reused from the
+      earlier course task.</div>
+    </div>
+  </div>
+
+  <h2>The dilemma, encoded</h2>
+  <p class="sub">How much may the AI approve alone? Our posture — enforced by the router, provable in tests:</p>
+  <div class="dilemma">
+    <h3>The agent may auto-approve only when all of these hold</h3>
+    <ul>
+      <li>Amount ≤ <span class="n">$250</span> — or ≤ <span class="n">$400</span> for a vendor+category this system has already paid successfully (trust is earned from our own payment history)</li>
+      <li>Per-category caps: SaaS ≤ <span class="n">$200/mo</span> · meals ≤ <span class="n">$75</span> per attendee</li>
+      <li>Agent confidence ≥ <span class="n">0.80</span></li>
+      <li>Zero hard stops: new vendor, foreign-currency stop, math mismatch, fraud signals, missing receipt or info — each one forces a human, at any amount</li>
+    </ul>
+  </div>
+
+  <div class="legend">
+    <div class="item"><span class="lw"></span> synchronous call</div>
+    <div class="item"><span class="lw d"></span> published event (pub/sub)</div>
+    <div class="item"><span class="swatch" style="background: var(--auto)"></span> auto-approve</div>
+    <div class="item"><span class="swatch" style="background: var(--human)"></span> human review</div>
+    <div class="item"><span class="swatch" style="background: var(--rejectc)"></span> reject / failure</div>
+    <div class="item"><span class="swatch" style="background: var(--dup)"></span> duplicate</div>
+  </div>
+</main>
