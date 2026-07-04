@@ -8,3 +8,8 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["libs", "services"]
+filterwarnings = [
+    # Starlette deprecates its httpx-based TestClient on newer versions; the migration
+    # (httpx2) is a dependency decision, not something to fix per-test. Narrow match only.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning",
+]
