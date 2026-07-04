@@ -371,3 +371,40 @@ record, not a process" philosophy as D-013.
   partitioning at real scale (documented in the D-010 scale path).
 - The scenario-field injection must be clearly documented so graders don't mistake it for
   payload-driven behavior.
+
+---
+
+## D-015 — Single-owner state keying (Dapr keyPrefix stays at appid default)
+
+**Date:** 2026-07-04 · **Status:** Accepted
+
+**Decision:** Leave `dapr/components/statestore.yaml` at Dapr's default `keyPrefix` behavior
+(`appid`): every state key is physically namespaced per owning service (e.g.
+`intake-api||fp:abc`). This is the deliberate architecture, not an unexamined default —
+**single-owner keying**: every state key has exactly one owning service; cross-service data
+flows via pub/sub events, never shared state keys (per docs/superpowers/specs §2/§8 service
+ownership table, and D-007/D-010).
+
+**Alternatives considered:**
+- `keyPrefix: none` (global namespace) — rejected: shared keys would reintroduce hidden
+  coupling and make two services silently co-own money-critical keys.
+- `keyPrefix: name` — a fixed, app-name-independent prefix instead of the per-appid default;
+  rejected for the same reason as `none` once more than one service targets the same logical
+  component: it does not by itself enforce that a key has a single owner, it just renames the
+  shared namespace.
+
+**Advantages of the choice:**
+- Enforced ownership isolation matches D-007 (choreography) and D-010 (statelessness): a
+  service cannot corrupt another's state even by key collision, because the physical key
+  space is partitioned per service before the app-level key is ever compared.
+- No new runtime concept — it is Dapr's out-of-the-box behavior, so the "decision" is really
+  "we looked at it and are keeping it," made explicit so it isn't silently relied upon.
+
+**Disadvantages accepted:**
+- A genuinely shared key (none currently exists in the design — budgets are payment-svc-only,
+  fingerprints decision-svc-only, escalations approval-svc-only) would need an explicit
+  component change (keyPrefix) plus a data migration if one is ever introduced.
+- Flagged by the Phase 01 final review as the risk to keep visible: because the isolation is
+  implicit in a default rather than enforced by code, a future contributor could add a
+  cross-service read/write assuming shared keying works, and only discover the per-appid
+  partition at runtime.
