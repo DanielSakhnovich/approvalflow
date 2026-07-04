@@ -66,23 +66,41 @@ class DaprStateStore:
         if resp.status_code == 409:
             return False  # standard etag-mismatch conflict
         if resp.status_code == 500:
-            # Dapr's Redis state component runs both etag-CAS and
-            # first-write-only checks through the same conditional-set Lua
-            # script, and doesn't always surface a conflict as 409. Verified
-            # against a real Redis-backed sidecar (Task 5 compose smoke,
-            # scripts/smoke-compose.sh):
-            #   - stale-etag mismatch: observed as 409 (handled above), but
-            #     some deployments surface it as 500 with an "etag mismatch"
-            #     style message in the body instead.
+            # Dapr's Redis state component wraps EVERY error from its
+            # conditional-set Lua script as `failed to set key %s: %w`
+            # (components-contrib v1.15.4, state/redis/redis.go) - including
+            # genuine infra failures (OOM, connection reset, timeouts), not
+            # just CAS conflicts. A bare substring match on "failed to set
+            # key" would silently swallow those as "conflict" instead of
+            # raising (M15). Gate each branch on the etag mode that can
+            # actually produce it, and additionally require the Lua
+            # conditional-check's own signature for the first-write branch,
+            # since that's the only part of the wrapped body that's specific
+            # to a real conflict rather than the generic wrapper text:
+            #   - etag present (CAS mismatch): observed as 409 (handled
+            #     above), but some deployments surface it as 500 with an
+            #     "etag mismatch" style message in the body instead. NOTE:
+            #     this substring check is a residual risk symmetric to the
+            #     one below - Dapr wraps ANY etag-mode Redis error as
+            #     ETagMismatch-flavored text too, so a real infra failure in
+            #     etag mode could in principle also be misread as a
+            #     conflict; this is an upstream Dapr limitation, not
+            #     something afcommon can fully close from the client side.
             #   - first-write-only (etag=None) against an existing key:
-            #     observed as 500 with a body like "failed to set key ...
-            #     script: ...", which does NOT mention "etag" at all.
-            # Both are genuine CAS conflicts and must return False. Only treat
-            # a 500 as a CAS conflict when the body actually says so;
-            # otherwise a dead or misconfigured state store would silently
-            # masquerade as a conflict instead of failing loudly (M15).
+            #     verified against a real Redis-backed sidecar (Task 5/6
+            #     compose smoke, scripts/smoke-compose.sh) to come back as
+            #     500 with a body containing BOTH "failed to set key" (the
+            #     wrapper) AND "user_script" (the Lua conditional-check
+            #     script's own error signature, e.g. "ERR user_script:14:
+            #     failed to set key ... script: <hash>, on @user_script:14.").
+            #     Requiring both means a bare wrapper body with no Lua
+            #     signature (e.g. "failed to set key app||k: connection
+            #     reset by peer") falls through and raises instead of being
+            #     treated as a conflict.
             body = resp.text.lower()
-            if "etag" in body or "failed to set key" in body:
+            if etag is not None and "etag" in body:
+                return False
+            if etag is None and "failed to set key" in body and "user_script" in body:
                 return False
             resp.raise_for_status()
         resp.raise_for_status()

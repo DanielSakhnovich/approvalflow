@@ -130,23 +130,46 @@ async def test_dapr_try_save_500_etag_mismatch_body_is_conflict():
 
 
 async def test_dapr_try_save_500_first_write_conflict_body_is_conflict():
-    # Observed against a real Dapr Redis sidecar (Task 5 compose smoke): a
-    # first-write-only save (etag=None) against an existing key comes back as
-    # 500 with a body that names the failed Lua "set key" call and never
-    # mentions "etag" at all.
+    # Real body captured verbatim against a live Dapr Redis sidecar (Task 5/6
+    # compose smoke, scripts/smoke-compose.sh): a first-write-only save
+    # (etag=None) against an existing key comes back as 500 with a body that
+    # contains both the generic wrapper ("failed to set key") AND the Lua
+    # conditional-check script's own error signature ("user_script").
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             500,
             json={
                 "errorCode": "ERR_STATE_SAVE",
                 "message": "failed saving state in state store statestore: "
-                "failed to set key app||k: ERR user_script:14: failed to set "
-                "key app||k script: deadbeef, on @user_script:14.",
+                "failed to set key intake-api||validate-conflict-body: ERR "
+                "user_script:14: failed to set key "
+                "intake-api||validate-conflict-body script: "
+                "d908b9553add63a82e03589b5c6d01a7654ef0f2, on @user_script:14.",
             },
         )
 
     store = _dapr_store_with_transport(handler)
     assert not await store.try_save("k", {"a": 1}, None)
+
+
+async def test_dapr_try_save_500_first_write_infra_error_raises():
+    # A real infra failure (e.g. Redis OOM, connection reset) wrapped by
+    # Dapr's Redis component as "failed to set key %s: %w" but WITHOUT the
+    # Lua conditional-check's own "user_script" signature must not be
+    # mistaken for a first-write conflict - it must raise instead of
+    # silently reporting "conflict".
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={
+                "errorCode": "ERR_STATE_SAVE",
+                "message": "failed to set key app||k: connection reset by peer",
+            },
+        )
+
+    store = _dapr_store_with_transport(handler)
+    with pytest.raises(httpx.HTTPStatusError):
+        await store.try_save("k", {"a": 1}, None)
 
 
 async def test_dapr_try_save_500_other_error_raises():
