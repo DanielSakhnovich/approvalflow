@@ -11,3 +11,8 @@ app.add_middleware(CorrelationIdMiddleware)
 @app.get("/healthz")
 async def healthz() -> dict:
     return {"status": "ok", "service": "intake-api"}
+
+
+from .api import router  # noqa: E402
+
+app.include_router(router)
