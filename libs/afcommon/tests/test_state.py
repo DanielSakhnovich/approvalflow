@@ -83,9 +83,6 @@ async def test_cas_update_retries_past_conflicts():
 
 
 async def test_cas_update_raises_after_max_retries():
-    store = InMemoryStateStore()
-    await store.try_save("k", 0, None)
-
     class AlwaysConflict(InMemoryStateStore):
         async def try_save(self, key, value, etag):
             return False
@@ -185,3 +182,40 @@ async def test_dapr_try_save_500_other_error_raises():
     store = _dapr_store_with_transport(handler)
     with pytest.raises(httpx.HTTPStatusError):
         await store.try_save("k", {"a": 1}, "some-etag")
+
+
+async def test_dapr_get_204_empty_body_returns_none_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)
+
+    store = _dapr_store_with_transport(handler)
+    value, etag = await store.get("missing-key")
+    assert value is None
+    assert etag is None
+
+
+async def test_dapr_get_200_extracts_value_and_etag():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"a": 1}, headers={"ETag": "etag-123"})
+
+    store = _dapr_store_with_transport(handler)
+    value, etag = await store.get("k")
+    assert value == {"a": 1}
+    assert etag == "etag-123"
+
+
+async def test_dapr_delete_204_returns_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)
+
+    store = _dapr_store_with_transport(handler)
+    assert await store.delete("k") is None
+
+
+async def test_dapr_delete_500_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"errorCode": "ERR_STATE_DELETE", "message": "boom"})
+
+    store = _dapr_store_with_transport(handler)
+    with pytest.raises(httpx.HTTPStatusError):
+        await store.delete("k")

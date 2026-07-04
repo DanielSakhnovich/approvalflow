@@ -5,6 +5,12 @@ metadata:
 spec:
   type: state.redis
   version: v1
+  # keyPrefix is deliberately left at its default (`appid`): every state key is
+  # physically namespaced per owning service (e.g. `intake-api||fp:abc`). This
+  # is a design rule, not an oversight -- single-owner keying, every state key
+  # has exactly one owning service, cross-service data flows via pub/sub
+  # events, never shared state keys. See decisions.md D-015. Any future
+  # cross-service key requires changing this component explicitly.
   metadata:
     - name: redisHost
       value: redis:6379

@@ -23,3 +23,15 @@ def test_default_correlation_id_is_dash(capsys):
     logging.getLogger(__name__).warning("no context")
     entry = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert entry["correlation_id"] == "-"
+
+
+def test_exception_logging_includes_traceback_in_exception_field(capsys):
+    setup_json_logging("test-svc")
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        logging.getLogger(__name__).exception("something failed")
+    entry = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert "exception" in entry
+    assert "ValueError: boom" in entry["exception"]
+    assert "Traceback" in entry["exception"]

@@ -29,7 +29,17 @@ def new_event_meta(invoice_id: str, correlation_id: str) -> EventMeta:
     )
 
 
-async def publish(topic: str, payload: dict, base_url: str = "http://localhost:3500") -> None:
-    async with httpx.AsyncClient(timeout=10.0) as client:
+async def publish(
+    topic: str,
+    payload: dict,
+    base_url: str = "http://localhost:3500",
+    client: httpx.AsyncClient | None = None,
+) -> None:
+    if client is not None:
         resp = await client.post(f"{base_url}/v1.0/publish/{PUBSUB_NAME}/{topic}", json=payload)
+        resp.raise_for_status()
+        return
+    async with httpx.AsyncClient(timeout=10.0) as owned_client:
+        url = f"{base_url}/v1.0/publish/{PUBSUB_NAME}/{topic}"
+        resp = await owned_client.post(url, json=payload)
         resp.raise_for_status()
