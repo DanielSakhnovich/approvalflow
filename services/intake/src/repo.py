@@ -1,6 +1,7 @@
 from collections.abc import Callable
 
-from afcommon.state import StateStore, cas_update, try_register
+from afcommon.dedupe import EventDedupe
+from afcommon.state import StateStore, cas_update
 
 from .models import InvoiceRecord
 
@@ -10,6 +11,7 @@ _COUNTERS_KEY = "dashboard:counters"
 class IntakeRepo:
     def __init__(self, store: StateStore):
         self._store = store
+        self._dedupe = EventDedupe(store)
 
     async def save_record(self, record: InvoiceRecord) -> None:
         await cas_update(self._store, f"invoice:{record.invoice_id}",
@@ -38,7 +40,7 @@ class IntakeRepo:
         return InvoiceRecord.model_validate(value) if value is not None else None
 
     async def first_time_event(self, event_id: str) -> bool:
-        return await try_register(self._store, f"processed:{event_id}", {"seen": True})
+        return await self._dedupe.first_time(event_id)
 
     async def bump_counters(self, **deltas: int) -> dict:
         def bump(current: dict | None) -> dict:
