@@ -114,6 +114,22 @@ def test_hostile_battery_never_raises_and_always_flags_malformed():
     assert isinstance(r_hostile, ValidationResult)
     assert "GLOBAL-MALFORMED" in r_hostile.hard_stops
 
+    # Non-finite and oversized numerics: these construct as Decimals just
+    # fine (so naive parse-time checks miss them) but crash quantize/int
+    # downstream -- each must be flagged malformed, never raise.
+    for bad in [float("inf"), float("nan"), 1e50, "1e50", 10**40]:
+        r_total = validate({**FIXTURES["INV-1001"], "total": bad}, FX, T)
+        assert isinstance(r_total, ValidationResult)
+        assert "GLOBAL-MALFORMED" in r_total.hard_stops, repr(bad)
+
+        r_price = validate(
+            {**FIXTURES["INV-1001"],
+             "lineItems": [{"description": "x", "quantity": 1, "unitPrice": bad}]},
+            FX, T,
+        )
+        assert isinstance(r_price, ValidationResult)
+        assert "GLOBAL-MALFORMED" in r_price.hard_stops, repr(bad)
+
 
 def test_null_total_can_never_auto_approve():
     # CRITICAL SAFETY ASSERTION: a null/unparseable `total` must never be
