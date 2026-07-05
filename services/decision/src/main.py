@@ -3,6 +3,7 @@ from afcommon.middleware import CorrelationIdMiddleware
 from fastapi import FastAPI
 
 from .config_api import router as config_router
+from .subscriptions import router as subscriptions_router
 
 setup_json_logging("decision-svc")
 
@@ -16,3 +17,4 @@ async def healthz() -> dict:
 
 
 app.include_router(config_router)
+app.include_router(subscriptions_router)
