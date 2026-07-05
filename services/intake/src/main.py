@@ -3,6 +3,7 @@ from afcommon.middleware import CorrelationIdMiddleware
 from fastapi import FastAPI
 
 from .api import router
+from .subscriptions import router as sub_router
 
 setup_json_logging("intake-api")
 
@@ -16,3 +17,4 @@ async def healthz() -> dict:
 
 
 app.include_router(router)
+app.include_router(sub_router)
