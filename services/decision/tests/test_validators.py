@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from services.decision.src.config import Thresholds
-from services.decision.src.validators import validate
+from services.decision.src.validators import ValidationResult, validate
 
 
 def _fixtures() -> tuple:
@@ -67,3 +67,65 @@ def test_receipt_boundary():
     over = {**base, "total": 25.01,
             "lineItems": [{"description": "x", "quantity": 1, "unitPrice": 25.01}]}
     assert "GLOBAL-RECEIPT" in validate(over, FX, T).hard_stops
+
+
+# --- Malformed-content regression tests -------------------------------------
+#
+# validate() must never raise on invoice content, and malformed content must
+# never be silently coerced into a passing/auto-approvable result.
+
+
+def test_null_total_is_malformed_hard_stop():
+    inv = {**FIXTURES["INV-1001"], "total": None}
+    r = validate(inv, FX, T)
+    assert "GLOBAL-MALFORMED" in r.hard_stops
+
+
+def test_null_line_items_is_malformed_hard_stop():
+    inv = {**FIXTURES["INV-1001"], "lineItems": None}
+    r = validate(inv, FX, T)
+    assert "GLOBAL-MALFORMED" in r.hard_stops
+
+
+def test_non_numeric_unit_price_is_malformed_hard_stop():
+    inv = {**FIXTURES["INV-1001"],
+           "lineItems": [{"description": "x", "quantity": 1, "unitPrice": "abc"}]}
+    r = validate(inv, FX, T)
+    assert "GLOBAL-MALFORMED" in r.hard_stops
+
+
+def test_null_tax_amount_is_malformed_hard_stop():
+    inv = {**FIXTURES["INV-1001"], "taxAmount": None}
+    r = validate(inv, FX, T)
+    assert "GLOBAL-MALFORMED" in r.hard_stops
+
+
+def test_hostile_battery_never_raises_and_always_flags_malformed():
+    # Fully empty invoice: `total` is entirely absent, which is just as
+    # unusable as an explicit null -- validate() must still return (not
+    # raise) and must still escalate rather than silently treat it as $0.
+    r_empty = validate({}, FX, T)
+    assert isinstance(r_empty, ValidationResult)
+    assert "GLOBAL-MALFORMED" in r_empty.hard_stops
+
+    # Wrong-typed everything: dict where a number is expected, a list
+    # containing an empty dict for lineItems, an int for currency.
+    r_hostile = validate({"total": {}, "lineItems": [{}], "currency": 7}, FX, T)
+    assert isinstance(r_hostile, ValidationResult)
+    assert "GLOBAL-MALFORMED" in r_hostile.hard_stops
+
+
+def test_null_total_can_never_auto_approve():
+    # CRITICAL SAFETY ASSERTION: a null/unparseable `total` must never be
+    # silently coerced to 0 and passed through as a clean, auto-approvable
+    # result. If we had coerced malformed numerics to a bare 0 without also
+    # forcing a hard stop, a garbage/missing amount would look exactly like
+    # a legitimate $0.00 invoice -- i.e. it would slip *under* every
+    # autonomy ceiling and could be auto-approved without a human ever
+    # looking at it. Asserting hard_stops is non-empty here is what
+    # guarantees that can't happen: any gate that only auto-approves when
+    # hard_stops == [] will correctly refuse this invoice.
+    inv = {**FIXTURES["INV-1001"], "total": None}
+    r = validate(inv, FX, T)
+    assert r.hard_stops != []
+    assert "GLOBAL-MALFORMED" in r.hard_stops
