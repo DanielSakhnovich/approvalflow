@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 
 import pytest
+from afcommon.state import InMemoryStateStore
 
-from libs.afcommon.afcommon.state import InMemoryStateStore
 from services.decision.src.fingerprint import FingerprintRegistry, fingerprint_of
 
 
@@ -44,6 +44,22 @@ def test_fingerprint_of_inv1007_same_as_inv1001():
     fp1001 = fingerprint_of(FIXTURES["INV-1001"])
     fp1007 = fingerprint_of(FIXTURES["INV-1007"])
     assert fp1001 == fp1007
+
+
+def test_fingerprint_near_zero_totals_are_deterministic():
+    """Totals 0.001 and 0.004 both round to 0 cents -> IDENTICAL fingerprints."""
+    inv_a = {**FIXTURES["INV-1001"], "total": 0.001}
+    inv_b = {**FIXTURES["INV-1001"], "total": 0.004}
+    assert fingerprint_of(inv_a) == fingerprint_of(inv_b)
+
+
+def test_fingerprint_unparseable_total_self_matches_and_differs_from_zero():
+    """A genuinely unparseable total (None) still fingerprint-matches itself
+    and differs from a parseable total that rounds to 0 cents."""
+    inv_none = {**FIXTURES["INV-1001"], "total": None}
+    inv_zero = {**FIXTURES["INV-1001"], "total": 0.0}
+    assert fingerprint_of(inv_none) == fingerprint_of(inv_none)
+    assert fingerprint_of(inv_none) != fingerprint_of(inv_zero)
 
 
 def test_fingerprint_of_different_totals_different_hash():

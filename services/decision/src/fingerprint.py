@@ -3,49 +3,39 @@
 import hashlib
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
 
+from afcommon.state import try_register
 
-def _to_cents_safe(value: object) -> int:
+
+def _to_cents_safe(value: object) -> int | None:
     """
     Convert a dollar-amount value to integer cents using ROUND_HALF_UP.
-    On any parse error, return 0 (safe because fingerprint will use raw string fallback).
+    Returns None strictly on parse failure (including non-finite values);
+    a legitimate amount that rounds to 0 cents returns 0.
     """
     try:
         d = Decimal(str(value))
         if not d.is_finite():
-            return 0
+            return None
         return int((d * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     except (DecimalException, ValueError, TypeError, OverflowError):
-        return 0
+        return None
 
 
 def fingerprint_of(invoice: dict) -> str:
     """
     Compute sha256 fingerprint of invoice as: sha256(vendor|invoiceNumber|total_cents).
 
-    For malformed total (unparseable), fall back to raw string of total.
-    This ensures malformed garbage still fingerprint-matches itself.
+    Any parseable total (including one that rounds to 0 cents, e.g. 0.001 or
+    0.004) maps deterministically through its cents value. Only a genuinely
+    unparseable total falls back to the raw string of `total`, so malformed
+    garbage still fingerprint-matches itself without crashing.
     """
     vendor = invoice.get("vendor", "")
     invoice_number = invoice.get("invoiceNumber", "")
     total = invoice.get("total")
 
-    # Try to convert total to cents; if it fails, use raw string
     total_cents = _to_cents_safe(total)
-    if total_cents == 0:
-        # Check if total was actually 0 or if it was malformed
-        try:
-            d = Decimal(str(total))
-            if d.is_finite() and d == Decimal(0):
-                # Legitimate zero
-                total_str = "0"
-            else:
-                # Malformed or infinity, use raw string
-                total_str = str(total)
-        except (DecimalException, ValueError, TypeError):
-            # Parse error, use raw string
-            total_str = str(total)
-    else:
-        total_str = str(total_cents)
+    total_str = str(total_cents) if total_cents is not None else str(total)
 
     fingerprint_input = f"{vendor}|{invoice_number}|{total_str}"
     return hashlib.sha256(fingerprint_input.encode()).hexdigest()
@@ -77,7 +67,6 @@ class FingerprintRegistry:
         value = {"invoiceId": invoice_id}
 
         # Try atomic registration
-        from libs.afcommon.afcommon.state import try_register
         registered = await try_register(self.store, key, value)
 
         if registered:
@@ -89,6 +78,10 @@ class FingerprintRegistry:
         if existing and existing.get("invoiceId") == invoice_id:
             # Same owner, this is a resubmission
             return True
-        else:
-            # Different owner, duplicate
-            return False
+        # Different owner -> duplicate. Note: `existing` being None here is
+        # unreachable today (fp:* keys have no TTL/eviction, so a key that
+        # just failed first-write registration must still be readable), but
+        # if eviction ever appears we deliberately stay conservative and
+        # treat the unreadable-owner case as a duplicate rather than risk a
+        # double payment.
+        return False
