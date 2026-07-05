@@ -304,6 +304,37 @@ recurring) — the fixture file explicitly invites expanding the set.
 
 ---
 
+## D-016 — Consumer-dedupe wrapper extracted into afcommon
+
+**Date:** 2026-07-06 · **Status:** Accepted (raised by Daniel; recommendation accepted)
+
+**Decision:** The mechanical M10 consumer-dedupe wrapper — CloudEvent `data` unwrapping,
+correlation/invoice contextvar binding, and the atomic `processed:{event_id}` first-time check —
+lives ONCE in afcommon (`EventDedupe` + a small parse/bind helper). Intake is refactored to
+delegate to it (its existing tests pin behavior); decision-svc and all later consumers (approval,
+payment, audit, notification) use it from day one. Handler *bodies* (counters, publishing, sagas)
+stay per-service — the helper covers only the four mechanical steps, nothing more.
+
+**Alternative considered:** keep per-service copies of the ~10-line wrapper.
+
+**Advantages of the choice:**
+- The wrapper's internal ordering is load-bearing (dedupe-mark vs. transform-commit — already the
+  subject of a documented accepted-risk analysis on intake's copy); one implementation means one
+  place to reason about and one place to fix.
+- Payment's dedupe guards money ("retried payments — exactly one effect"); correctness should not
+  depend on copy-paste fidelity — same drift class that produced the `from libs.` Critical.
+- Five concrete consumers are scheduled — this is planned duplication, not speculative abstraction;
+  extraction is cheapest now (one consumer built, four unbuilt).
+- Dedupe state stays per-service automatically (Dapr app-id key prefix, D-015): shared code,
+  isolated data.
+
+**Disadvantages accepted:**
+- Shared code couples consumers to afcommon changes (mitigated: one monorepo, one deploy unit per
+  compose build, versioned together).
+- The intake refactor itself carries small regression risk (mitigated by its existing suite).
+
+---
+
 ## D-013 — HITL pause is a durable state record, not a waiting process
 
 **Date:** 2026-07-03 · **Status:** Accepted
