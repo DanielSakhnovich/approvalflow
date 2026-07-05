@@ -115,5 +115,26 @@ async def main():
 asyncio.run(main())
 "
 
+echo "--- intake E2E ---"
+TRACKING=$(curl -sf -X POST http://localhost:8001/api/invoices \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"INV-1001","submitter":"dana.cohen@northwind.example","department":"engineering-2026Q2","vendor":"Bistro 19","vendorKnown":true,"invoiceNumber":"NW-INV-7781","currency":"USD","category":"meals","attendees":1,"lineItems":[{"description":"Team lunch","quantity":1,"unitPrice":38.89}],"taxAmount":3.11,"total":42.0,"receiptPresent":true,"date":"2026-05-12","notes":"smoke"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
+echo "tracking: $TRACKING"
+
+STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+[ "$STATUS" = "evaluating" ] || { echo "FAIL: expected evaluating, got $STATUS"; exit 1; }
+
+# loopback proof: intake's own subscription received the event it published
+# (poll dapr subscription delivery via the dedupe key appearing in redis)
+sleep 2
+docker compose exec -T redis redis-cli --scan --pattern 'intake-api||processed:*' | grep -q processed \
+  || { echo "FAIL: no processed-event key — pub/sub loopback did not deliver"; exit 1; }
+
+curl -sf http://localhost:8001/api/dashboard | grep -q '"submitted"' \
+  || { echo "FAIL: dashboard missing submitted counter"; exit 1; }
+echo "INTAKE E2E: OK"
+
 echo "=== docker compose down ==="
 docker compose down
