@@ -23,6 +23,25 @@ Interactive version: open [`docs/service-maps.html`](docs/service-maps.html) in 
 docker compose up --build
 ```
 
+### Try it
+
+Submit an invoice:
+```
+curl -X POST http://localhost:8001/api/invoices \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"INV-1001","submitter":"dana.cohen@northwind.example","department":"engineering-2026Q2","vendor":"Bistro 19","vendorKnown":true,"invoiceNumber":"NW-INV-7781","currency":"USD","category":"meals","attendees":1,"lineItems":[{"description":"Team lunch","quantity":1,"unitPrice":38.89}],"taxAmount":3.11,"total":42.0,"receiptPresent":true,"date":"2026-05-12","notes":"smoke"}'
+```
+
+Check status (replace `<trackingId>` with the ID from the response):
+```
+curl http://localhost:8001/api/invoices/<trackingId>
+```
+
+View dashboard:
+```
+curl http://localhost:8001/api/dashboard
+```
+
 ## Test
 
 ```
