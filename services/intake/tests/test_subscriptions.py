@@ -1,5 +1,10 @@
 import pytest
-from afcommon.contracts import DecisionMadePayload, PaymentCompletedPayload
+from afcommon.contracts import (
+    ApprovalResolvedPayload,
+    DecisionMadePayload,
+    PaymentCompletedPayload,
+    PaymentFailedPayload,
+)
 from afcommon.events import new_event_meta
 from afcommon.state import InMemoryStateStore
 from fastapi.testclient import TestClient
@@ -96,3 +101,61 @@ def test_unknown_invoice_event_is_acked(env):
     resp = client.post("/events/decision-made",
                        json=cloudevent(decision_payload("inv_ghost")))
     assert resp.status_code == 200
+
+
+def test_approval_resolved_event_applies_verdict_and_counters(env):
+    client, repo = env
+    tracking = submit(client)
+    # Send decision with human_review route to set status to pending_approval
+    client.post("/events/decision-made",
+                json=cloudevent(decision_payload(tracking, route="human_review")))
+    # Send approval-resolved event with verdict=approved
+    approval = ApprovalResolvedPayload(
+        meta=new_event_meta(tracking, "corr_1"), verdict="approved",
+        approver_id="lena@northwind.example", comment="ok").model_dump()
+    resp = client.post("/events/approval-resolved", json=cloudevent(approval))
+    assert resp.status_code == 200
+    # Verify record status and decided_by
+    record_resp = client.get(f"/api/invoices/{tracking}").json()
+    assert record_resp["status"] == "approved"
+    assert record_resp["decidedBy"] == "lena@northwind.example"
+    # Verify dashboard counter
+    counters = client.get("/api/dashboard").json()
+    assert counters["verdict_approved"] == 1
+
+
+def test_payment_failed_event_and_human_paid_counter(env):
+    client, repo = env
+    # Test payment_completed with human approval
+    tracking1 = submit(client)
+    client.post("/events/decision-made",
+                json=cloudevent(decision_payload(tracking1, route="human_review")))
+    approval = ApprovalResolvedPayload(
+        meta=new_event_meta(tracking1, "corr_1"), verdict="approved",
+        approver_id="lena@northwind.example", comment="ok").model_dump()
+    client.post("/events/approval-resolved", json=cloudevent(approval))
+    # Now complete the payment for human-approved invoice
+    pay = PaymentCompletedPayload(
+        meta=new_event_meta(tracking1, "corr_1"), amount_cents=4200,
+        budget_remaining_cents=1, department="engineering-2026Q2").model_dump()
+    resp = client.post("/events/payment-completed", json=cloudevent(pay))
+    assert resp.status_code == 200
+    counters = client.get("/api/dashboard").json()
+    assert counters["paid"] == 1
+    assert counters["paid_human_cents"] == 4200
+
+    # Test payment_failed event on an approved invoice
+    tracking2 = submit(client)
+    client.post("/events/decision-made",
+                json=cloudevent(decision_payload(tracking2)))  # auto_approve
+    # Now try to fail payment on an approved invoice
+    failed = PaymentFailedPayload(
+        meta=new_event_meta(tracking2, "corr_2"), reason="insufficient funds",
+        compensated=False).model_dump()
+    resp = client.post("/events/payment-failed", json=cloudevent(failed))
+    assert resp.status_code == 200
+    record_resp = client.get(f"/api/invoices/{tracking2}").json()
+    assert record_resp["status"] == "payment_failed"
+    assert "insufficient funds" in record_resp["reasoning"]
+    counters = client.get("/api/dashboard").json()
+    assert counters["payment_failed"] == 1

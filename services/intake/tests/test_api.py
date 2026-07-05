@@ -43,14 +43,22 @@ def test_submit_rejects_bad_payload(env):
 
 def test_submit_publish_failure_is_loud(env):
     client, repo, _ = env
+    captured_id = None
 
     async def broken_publish(topic, payload):
+        nonlocal captured_id
+        captured_id = payload["meta"]["invoice_id"]
         raise RuntimeError("sidecar down")
 
     app.dependency_overrides[deps.get_publisher] = lambda: broken_publish
     resp = client.post("/api/invoices", json=FIXTURE)
     assert resp.status_code == 503
     # the record exists and is marked, not silently dropped
+    async def check_record():
+        record = await repo.get_record(captured_id)
+        assert record is not None
+        assert record.status == "submit_failed"
+    anyio.run(check_record)
 
 
 def test_get_status_and_404(env):
