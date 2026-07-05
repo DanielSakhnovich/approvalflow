@@ -205,6 +205,51 @@ async def test_malformed_twice_raises_provider_unavailable():
     assert len(bodies) == 2  # original ask + exactly one corrective re-ask
 
 
+async def test_transport_failure_during_corrective_reask_retries_within_shared_budget():
+    """malformed content (attempt 1) -> corrective re-ask hits 500 (attempt 2)
+    -> transport retry succeeds with valid content (attempt 3). Backoff is
+    indexed by TOTAL attempt number, so the single sleep is 0.5 * 2**1 = 1.0."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _completion_response("not-json {{{")
+        if calls["n"] == 2:
+            return httpx.Response(500)
+        return _completion_response(json.dumps(VALID_REC))
+
+    sleep = FakeSleep()
+    agent = _make_agent(handler, sleep=sleep, max_attempts=3)
+    result = await agent.evaluate(INVOICE, policy_rules="No alcohol-only receipts.")
+
+    assert result.recommendation == "approve"
+    assert calls["n"] == 3
+    assert sleep.calls == [1.0]
+
+
+async def test_shared_budget_hard_caps_total_http_calls_at_max_attempts():
+    """malformed (attempt 1) -> 500 (attempt 2) -> 500 (attempt 3): the shared
+    budget is exhausted, so evaluate() raises with EXACTLY max_attempts total
+    HTTP calls -- the corrective re-ask never double-dips a fresh budget."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _completion_response("not-json {{{")
+        return httpx.Response(500)
+
+    sleep = FakeSleep()
+    agent = _make_agent(handler, sleep=sleep, max_attempts=3)
+
+    with pytest.raises(ProviderUnavailable):
+        await agent.evaluate(INVOICE, policy_rules="No alcohol-only receipts.")
+
+    assert calls["n"] == 3
+    assert sleep.calls == [1.0]
+
+
 async def test_valid_json_failing_schema_validation_also_triggers_corrective_reask():
     bodies: list[dict] = []
     invalid_shape = json.dumps({"recommendation": "not-a-real-choice"})
