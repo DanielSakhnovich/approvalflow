@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-
 from afcommon.contracts import (
     ApprovalResolvedPayload,
     DecisionMadePayload,
@@ -7,16 +5,11 @@ from afcommon.contracts import (
     PaymentFailedPayload,
 )
 
-from .models import InvoiceRecord, InvoiceStatus
+from .models import InvoiceRecord, InvoiceStatus, touch
 
 
 class IllegalTransition(Exception):
     """Event does not apply to the record's current status."""
-
-
-def _touch(record: InvoiceRecord, **changes) -> InvoiceRecord:
-    return record.model_copy(
-        update={**changes, "updated_at": datetime.now(UTC).isoformat()})
 
 
 def _require(record: InvoiceRecord, expected: InvoiceStatus, event: str) -> None:
@@ -37,7 +30,7 @@ _DECISION_TARGET = {
 def apply_decision(record: InvoiceRecord, p: DecisionMadePayload) -> InvoiceRecord:
     _require(record, InvoiceStatus.EVALUATING, "decision-made")
     decided_by = None if p.route == "human_review" else "router"
-    return _touch(record, status=_DECISION_TARGET[p.route], route=p.route,
+    return touch(record, status=_DECISION_TARGET[p.route], route=p.route,
                   reasoning=p.reasoning, decided_by=decided_by)
 
 
@@ -55,16 +48,16 @@ def apply_approval(record: InvoiceRecord, p: ApprovalResolvedPayload) -> Invoice
         reasoning = f"{record.reasoning}\nApprover: {p.comment}".strip()
     else:
         reasoning = record.reasoning
-    return _touch(record, status=_VERDICT_TARGET[p.verdict],
+    return touch(record, status=_VERDICT_TARGET[p.verdict],
                   decided_by=decided_by, reasoning=reasoning)
 
 
 def apply_payment_completed(record: InvoiceRecord, p: PaymentCompletedPayload) -> InvoiceRecord:
     _require(record, InvoiceStatus.APPROVED, "payment-completed")
-    return _touch(record, status=InvoiceStatus.PAID)
+    return touch(record, status=InvoiceStatus.PAID)
 
 
 def apply_payment_failed(record: InvoiceRecord, p: PaymentFailedPayload) -> InvoiceRecord:
     _require(record, InvoiceStatus.APPROVED, "payment-failed")
     reasoning = f"{record.reasoning}\nPayment failed: {p.reason}".strip()
-    return _touch(record, status=InvoiceStatus.PAYMENT_FAILED, reasoning=reasoning)
+    return touch(record, status=InvoiceStatus.PAYMENT_FAILED, reasoning=reasoning)

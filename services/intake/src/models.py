@@ -85,3 +85,9 @@ class InvoiceRecord(BaseModel):
             created_at=now,
             updated_at=now,
         )
+
+
+def touch(record: InvoiceRecord, **changes) -> InvoiceRecord:
+    """Return a copy of record with changes applied and updated_at bumped to now."""
+    return record.model_copy(
+        update={**changes, "updated_at": datetime.now(UTC).isoformat()})

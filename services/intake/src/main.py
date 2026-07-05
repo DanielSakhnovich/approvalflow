@@ -2,6 +2,8 @@ from afcommon.logging import setup_json_logging
 from afcommon.middleware import CorrelationIdMiddleware
 from fastapi import FastAPI
 
+from .api import router
+
 setup_json_logging("intake-api")
 
 app = FastAPI(title="ApprovalFlow — Intake API", version="0.1.0")
@@ -12,7 +14,5 @@ app.add_middleware(CorrelationIdMiddleware)
 async def healthz() -> dict:
     return {"status": "ok", "service": "intake-api"}
 
-
-from .api import router  # noqa: E402
 
 app.include_router(router)

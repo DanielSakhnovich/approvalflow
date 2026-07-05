@@ -7,7 +7,7 @@ from afcommon.logging import correlation_id_var, invoice_id_var
 from fastapi import APIRouter, Depends, HTTPException
 
 from .deps import Publisher, get_publisher, get_repo
-from .models import InvoiceRecord, InvoiceStatus, InvoiceSubmission
+from .models import InvoiceRecord, InvoiceStatus, InvoiceSubmission, touch
 from .repo import IntakeRepo
 
 log = logging.getLogger(__name__)
@@ -38,8 +38,8 @@ async def _publish_submitted(publisher: Publisher, record: InvoiceRecord,
 
 @router.post("/invoices", status_code=202)
 async def submit(submission: InvoiceSubmission,
-                 repo: IntakeRepo = Depends(get_repo),  # noqa: B008
-                 publisher: Publisher = Depends(get_publisher)) -> dict:  # noqa: B008
+                 repo: IntakeRepo = Depends(get_repo),
+                 publisher: Publisher = Depends(get_publisher)) -> dict:
     invoice_id = f"inv_{uuid.uuid4().hex}"
     invoice_id_var.set(invoice_id)
     record = InvoiceRecord.new(invoice_id, correlation_id_var.get(), submission)
@@ -48,12 +48,11 @@ async def submit(submission: InvoiceSubmission,
         await _publish_submitted(publisher, record, submission)
     except Exception as e:
         log.exception("failed to publish invoice-submitted")
-        await repo.save_record(record.model_copy(
-            update={"status": InvoiceStatus.SUBMIT_FAILED}))
+        await repo.save_record(touch(record, status=InvoiceStatus.SUBMIT_FAILED))
         raise HTTPException(
             status_code=503,
             detail="submission stored but could not be queued; please retry") from e
-    record = record.model_copy(update={"status": InvoiceStatus.EVALUATING})
+    record = touch(record, status=InvoiceStatus.EVALUATING)
     await repo.save_record(record)
     await repo.bump_counters(submitted=1)
     log.info("invoice accepted")
@@ -63,7 +62,7 @@ async def submit(submission: InvoiceSubmission,
 
 
 @router.get("/invoices/{invoice_id}")
-async def get_status(invoice_id: str, repo: IntakeRepo = Depends(get_repo)) -> dict:  # noqa: B008
+async def get_status(invoice_id: str, repo: IntakeRepo = Depends(get_repo)) -> dict:
     record = await repo.get_record(invoice_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"unknown invoice {invoice_id}")
@@ -72,8 +71,8 @@ async def get_status(invoice_id: str, repo: IntakeRepo = Depends(get_repo)) -> d
 
 @router.put("/invoices/{invoice_id}", status_code=202)
 async def resubmit(invoice_id: str, submission: InvoiceSubmission,
-                   repo: IntakeRepo = Depends(get_repo),  # noqa: B008
-                   publisher: Publisher = Depends(get_publisher)) -> dict:  # noqa: B008
+                   repo: IntakeRepo = Depends(get_repo),
+                   publisher: Publisher = Depends(get_publisher)) -> dict:
     record = await repo.get_record(invoice_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"unknown invoice {invoice_id}")
@@ -83,10 +82,9 @@ async def resubmit(invoice_id: str, submission: InvoiceSubmission,
             detail=f"resubmission only allowed from needs_info (currently {record.status})")
     invoice_id_var.set(invoice_id)
     correlation_id_var.set(record.correlation_id)
-    record = record.model_copy(update={
-        "submission": submission.model_dump(by_alias=True),
-        "status": InvoiceStatus.EVALUATING,
-    })
+    record = touch(record,
+                   submission=submission.model_dump(by_alias=True),
+                   status=InvoiceStatus.EVALUATING)
     await repo.save_record(record)
     await _publish_submitted(publisher, record, submission)
     log.info("invoice resubmitted after send-back")
@@ -94,5 +92,5 @@ async def resubmit(invoice_id: str, submission: InvoiceSubmission,
 
 
 @router.get("/dashboard")
-async def dashboard(repo: IntakeRepo = Depends(get_repo)) -> dict:  # noqa: B008
+async def dashboard(repo: IntakeRepo = Depends(get_repo)) -> dict:
     return await repo.get_counters()

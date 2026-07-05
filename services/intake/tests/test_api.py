@@ -1,3 +1,6 @@
+import time
+
+import anyio
 import pytest
 from afcommon.state import InMemoryStateStore
 from fastapi.testclient import TestClient
@@ -82,3 +85,30 @@ def test_dashboard_counts_submissions(env):
     client.post("/api/invoices", json=FIXTURE)
     client.post("/api/invoices", json=FIXTURE)
     assert client.get("/api/dashboard").json()["submitted"] == 2
+
+
+def test_updated_at_advances_on_transitions(env):
+    client, repo, _ = env
+    tracking = client.post("/api/invoices", json=FIXTURE).json()["trackingId"]
+    get_resp = client.get(f"/api/invoices/{tracking}")
+    submitted_at = get_resp.json()["submittedAt"]
+    updated_at = get_resp.json()["updatedAt"]
+    assert updated_at >= submitted_at
+
+    # Force needs_info status
+    async def force_needs_info():
+        record = await repo.get_record(tracking)
+        await repo.save_record(record.model_copy(update={"status": InvoiceStatus.NEEDS_INFO}))
+    anyio.run(force_needs_info)
+
+    # Small delay to ensure time advances (microseconds apart)
+    time.sleep(0.01)
+
+    # Resubmit
+    resp = client.put(f"/api/invoices/{tracking}", json={**FIXTURE, "notes": "resubmitted"})
+    assert resp.status_code == 202
+
+    # Check that updated_at has advanced
+    get_resp = client.get(f"/api/invoices/{tracking}")
+    new_updated_at = get_resp.json()["updatedAt"]
+    assert new_updated_at > updated_at
