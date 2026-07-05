@@ -9,6 +9,12 @@ Design: `docs/superpowers/specs/2026-07-03-approvalflow-design.md` · Decisions:
 
 Interactive version (light/dark themes): open [`docs/system-map.html`](docs/system-map.html) in a browser.
 
+## Service relations
+
+Who talks to whom: one synchronous path in, one sync service-to-service call (Intake → Audit), everything else over the event bus:
+
+![ApprovalFlow service relations — pub/sub topics per service and the single sync call](docs/service-relations.png)
+
 ## Service internals
 
 Each service on one card — what comes **in**, what happens **inside**, what goes **out**, with its tech stack and the state it owns:
