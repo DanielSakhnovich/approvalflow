@@ -131,6 +131,44 @@ def test_hostile_battery_never_raises_and_always_flags_malformed():
         assert "GLOBAL-MALFORMED" in r_price.hard_stops, repr(bad)
 
 
+def test_huge_exponent_line_item_multiplication_is_malformed_not_raise():
+    # `1E+999990` is JSON-representable, constructs as a finite Decimal (so
+    # `_safe_decimal` lets it through), but `quantity * unitPrice` overflows
+    # the Decimal context and raises `decimal.Overflow` -- which is NOT a
+    # subclass of the builtin `OverflowError`, so it must be caught
+    # explicitly rather than slipping through `_to_cents`'s except tuple.
+    inv = {
+        **FIXTURES["INV-1001"],
+        "lineItems": [
+            {"description": "x", "quantity": "1E+999990", "unitPrice": "1E+999990"}
+        ],
+    }
+    r = validate(inv, FX, T)
+    assert isinstance(r, ValidationResult)
+    assert "GLOBAL-MALFORMED" in r.hard_stops
+
+
+def test_huge_exponent_fx_total_multiplication_is_malformed_not_raise():
+    # Same overflow hazard on the FX conversion path: `total * rate` with a
+    # huge-but-finite total must be flagged malformed, not raise, even
+    # though a normal fxRates entry is present for the currency. Note the
+    # exponent here (1E+1000000) is deliberately larger than the line-item
+    # case: the Decimal context's Emax is 999999, and multiplying by a
+    # ~1.08 rate barely nudges the exponent, so a total of "only" 1E+999990
+    # would *not* actually overflow at this multiplication (it would instead
+    # be caught downstream by the pre-existing `_to_cents` quantize guard).
+    # This larger exponent genuinely overflows at `total * rate` itself,
+    # exercising the `_safe_mul` guard added at that call site.
+    inv = {
+        **FIXTURES["INV-1001"],
+        "total": "1E+1000000",
+        "currency": "EUR",
+    }
+    r = validate(inv, FX, T)
+    assert isinstance(r, ValidationResult)
+    assert "GLOBAL-MALFORMED" in r.hard_stops
+
+
 def test_null_total_can_never_auto_approve():
     # CRITICAL SAFETY ASSERTION: a null/unparseable `total` must never be
     # silently coerced to 0 and passed through as a clean, auto-approvable

@@ -24,6 +24,11 @@ Field-by-field handling:
   Non-finite values (Infinity, NaN) and oversized magnitudes that
   exceed the cents-conversion precision (e.g. 1e50, 10**40) are also
   flagged malformed rather than crashing quantize/int downstream.
+  Individually-finite values can still overflow when multiplied (FX
+  `total * rate`, line-item `quantity * unitPrice`) -- e.g. a
+  huge-but-finite value like `1E+999990` -- so both multiplications
+  are wrapped via `_safe_mul` and flagged malformed on `decimal.Overflow`
+  rather than crashing `validate()`.
 - `lineItems`: must be a list of dicts. `None`, a non-list value, or a
   list containing non-dict items is flagged malformed and treated as
   an empty list for the line-item math check.
@@ -40,7 +45,7 @@ Field-by-field handling:
   type, so these are left as-is (no coercion needed for purity).
 """
 
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
 
 from pydantic import BaseModel
 
@@ -82,19 +87,48 @@ def _safe_decimal(value: object, field_name: str, malformed: list[str]) -> Decim
         return Decimal(0)
 
 
+def _safe_mul(a: Decimal, b: Decimal, field_name: str, malformed: list[str]) -> Decimal:
+    """
+    Multiply two Decimals, guarding against overflow.
+
+    Both operands are individually finite (having already passed
+    `_safe_decimal`), but their product can still blow the Decimal context's
+    exponent bounds -- e.g. a huge-but-finite value like `1E+999990` -- which
+    raises `decimal.Overflow`. Note `decimal.Overflow` is NOT a subclass of
+    the builtin `OverflowError`; it derives from `decimal.DecimalException` /
+    `ArithmeticError` instead, so a bare `except OverflowError` (as used
+    elsewhere for non-Decimal edge cases) would silently miss it. We catch
+    `decimal.DecimalException` -- the common base of `Overflow`,
+    `InvalidOperation`, etc. -- directly. Any failure flags `field_name` as
+    malformed and returns the 0 placeholder -- again safe only because the
+    accompanying GLOBAL-MALFORMED hard stop forces human review.
+    """
+    try:
+        return a * b
+    except DecimalException:
+        _flag_malformed(field_name, malformed)
+        return Decimal(0)
+
+
 def _to_cents(d: Decimal, field_name: str, malformed: list[str]) -> int:
     """
     Convert a dollar-amount Decimal to integer cents using ROUND_HALF_UP.
 
-    Belt-and-braces choke point: even finite Decimals can fail conversion
-    (e.g. oversized magnitudes like 1e50 exceed the quantize context
-    precision and raise InvalidOperation). Any failure flags `field_name`
-    as malformed and returns the 0 placeholder -- again safe only because
-    the accompanying GLOBAL-MALFORMED hard stop forces human review.
+    Belt-and-braces choke point: even finite Decimals can fail conversion.
+    Oversized magnitudes like 1e50 exceed the quantize context precision and
+    raise InvalidOperation; sufficiently large exponents (e.g. from a value
+    that survived `_safe_mul` because the multiplication itself didn't
+    overflow, such as `1E+999990 * 1`) can push the `d * 100` step itself
+    past the Decimal context's Emax and raise `decimal.Overflow` -- which is
+    NOT a subclass of the builtin `OverflowError`, so it must be caught via
+    `decimal.DecimalException` (its actual base) rather than relying on the
+    builtin name. Any failure flags `field_name` as malformed and returns
+    the 0 placeholder -- again safe only because the accompanying
+    GLOBAL-MALFORMED hard stop forces human review.
     """
     try:
         return int((d * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    except (InvalidOperation, ValueError, OverflowError):
+    except (DecimalException, ValueError, OverflowError):
         _flag_malformed(field_name, malformed)
         return 0
 
@@ -140,7 +174,7 @@ def validate(invoice: dict, fx_rates: dict, thresholds: Thresholds) -> Validatio
         else:
             rate = fx_rates[currency]
             rate_decimal = _safe_decimal(rate, "fxRate", malformed)
-            converted_dollars = total_decimal * rate_decimal
+            converted_dollars = _safe_mul(total_decimal, rate_decimal, "total", malformed)
             usd_cents = _to_cents(converted_dollars, "total", malformed)
 
             # Check if converted amount exceeds hard limits
@@ -167,7 +201,7 @@ def validate(invoice: dict, fx_rates: dict, thresholds: Thresholds) -> Validatio
         unit_price = item.get("unitPrice", 0.0)
         quantity_decimal = _safe_decimal(quantity, "lineItems", malformed)
         unit_price_decimal = _safe_decimal(unit_price, "lineItems", malformed)
-        item_total = quantity_decimal * unit_price_decimal
+        item_total = _safe_mul(quantity_decimal, unit_price_decimal, "lineItems", malformed)
         calculated_cents += _to_cents(item_total, "lineItems", malformed)
 
     tax_cents = _to_cents(
