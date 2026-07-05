@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -132,3 +133,30 @@ async def try_register(store: StateStore, key: str, value: Any) -> bool:
     if existing is not None:
         return False
     return await store.try_save(key, value, None)
+
+
+class YieldingStateStore(InMemoryStateStore):
+    """InMemoryStateStore that actually suspends on get/try_save.
+
+    Plain InMemoryStateStore never awaits anything, so under asyncio.gather
+    concurrent tasks would just run to completion one after another -
+    proving nothing about interleaving. Inserting a real suspension point
+    (await asyncio.sleep(0)) before delegating lets the event loop switch
+    between tasks mid-CAS-loop, so concurrent CAS loops can genuinely
+    race for the same key. Test utility, like InMemoryStateStore above.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conflicts = 0
+
+    async def get(self, key: str):
+        await asyncio.sleep(0)
+        return await super().get(key)
+
+    async def try_save(self, key: str, value, etag) -> bool:
+        await asyncio.sleep(0)
+        ok = await super().try_save(key, value, etag)
+        if not ok:
+            self.conflicts += 1
+        return ok
