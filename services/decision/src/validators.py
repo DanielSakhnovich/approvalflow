@@ -40,9 +40,20 @@ Field-by-field handling:
   dict) without needing to escalate — an unknown/garbled currency
   already produces a `GLOBAL-FX` hard stop via the existing "missing
   rate" path.
-- `category`, `receiptPresent`, `vendorKnown`, `attendees`: only ever
-  compared with `==`/`is`/truthiness, which cannot raise regardless of
-  type, so these are left as-is (no coercion needed for purity).
+- `category`, `receiptPresent`, `vendorKnown`: only ever compared with
+  `==`/`is`/truthiness, which cannot raise regardless of type, so these
+  are left as-is (no coercion needed for purity).
+- `attendees` (meals only): must be a real positive headcount to be
+  usable as a meals-cap multiplier downstream in the router
+  (`attendees * meals_per_attendee_cents`). `isinstance(x, int)` (with
+  `bool` explicitly excluded, since `bool` is an `int` subclass but
+  `True`/`False` are never a sane attendee count) and `x >= 1` are both
+  type-safe checks that cannot raise regardless of what `attendees`
+  actually is (string, list, dict, negative/zero int, bool, etc.), so no
+  `_safe_decimal`-style coercion is needed here -- anything that fails
+  this check is flagged MEAL-01 (a hard stop) rather than coerced,
+  because a meals invoice with an unusable attendee count must always
+  escalate to human review.
 """
 
 from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
@@ -145,7 +156,7 @@ def validate(invoice: dict, fx_rates: dict, thresholds: Thresholds) -> Validatio
     3. GLOBAL-MATH: line item + tax sum != total
     4. GLOBAL-RECEIPT: amount > $25 without receipt
     5. GLOBAL-VENDOR: vendor not known
-    6. MEAL-01: meals category without attendees
+    6. MEAL-01: meals category with missing or invalid (non-positive-int) attendees
     7. TRAVEL-02: travel category > $1500
     """
     hard_stops: list[str] = []
@@ -229,13 +240,27 @@ def validate(invoice: dict, fx_rates: dict, thresholds: Thresholds) -> Validatio
         hard_stops.append("GLOBAL-VENDOR")
         notes.append("Vendor is unknown")
 
-    # Step 5: MEAL-01 check (missing attendees for meals)
+    # Step 5: MEAL-01 check (missing or invalid attendees for meals)
     category = invoice.get("category", "")
     if category == "meals":
         attendees = invoice.get("attendees")
-        if attendees is None:
+        # `attendees` must be a usable positive headcount -- an int (excluding
+        # `bool`, which is an `int` subclass in Python but is never a sane
+        # attendee count) that is >= 1. A string ("2"), a list ([1]), a bool,
+        # zero, or a negative number all reach this branch and must hard-stop
+        # here rather than reach the router's `attendees * per_attendee_cents`
+        # multiplication downstream, which would raise (non-numeric) or
+        # silently misprice (bool/zero/negative) the meals cap.
+        valid_attendees = (
+            isinstance(attendees, int)
+            and not isinstance(attendees, bool)
+            and attendees >= 1
+        )
+        if not valid_attendees:
             hard_stops.append("MEAL-01")
-            notes.append("Meals category requires attendees field")
+            notes.append(
+                "Meals category requires attendees field: attendee count missing or invalid"
+            )
 
     # Step 6: TRAVEL-02 check (travel > $1500)
     if category == "travel" and usd_cents > 150000:

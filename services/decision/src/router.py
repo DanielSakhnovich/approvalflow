@@ -60,8 +60,9 @@ class RouterDecision(BaseModel):
 
 def _with_notes(reasoning: str, notes: list[str]) -> str:
     """Append Gate 2's plain-language stop notes to the agent's reasoning
-    (routes 3-8 per the decision-order doc; routes 1-2 use synthesized
-    templates instead and never call this helper)."""
+    (routes 3-8 per the decision-order doc only; routes 1-2 never call this
+    helper -- they use synthesized templates instead, verbatim, with no
+    notes appended)."""
     if not notes:
         return reasoning
     return reasoning + " " + " ".join(notes)
@@ -74,13 +75,19 @@ def _effective_ceiling_cents(thresholds: Thresholds, trusted: bool, invoice: dic
     per-attendee cap. No cap for any other category (including a missing/
     unrecognized one).
 
-    Subtlety: meals normally always carries an `attendees` value by the time
-    it reaches the router -- Gate 2's MEAL-01 hard stop already forces
-    human_review whenever a meals invoice lacks `attendees`, so branch 4 above
-    catches that case regardless of what this function computes. But this
-    function must still not crash if `attendees` is somehow missing anyway
-    (defense in depth): treat that as "no meals cap" rather than raising a
-    TypeError from `None * int`.
+    Subtlety: meals normally always carries a valid `attendees` value by the
+    time it reaches the router -- Gate 2's MEAL-01 hard stop already forces
+    human_review whenever a meals invoice lacks a usable attendee count, so
+    branch 4 above catches that case regardless of what this function
+    computes. But this function must still not crash if `attendees` is
+    somehow missing or malformed anyway (defense in depth): the meals cap is
+    applied ONLY when `attendees` passes the full type guard --
+    `isinstance(attendees, int) and not isinstance(attendees, bool) and
+    attendees >= 1` (same guard as MEAL-01, so `bool` -- an `int` subclass --
+    and non-numeric types like `str`/`list` are excluded too) -- otherwise
+    there is no meals cap at all (treated the same as an uncapped category),
+    rather than raising a `TypeError` from `"2" * int` or mispricing the cap
+    from a bool/zero/negative value.
     """
     base = thresholds.trusted_ceiling_cents if trusted else thresholds.ceiling_cents
     category = invoice.get("category")
@@ -90,7 +97,11 @@ def _effective_ceiling_cents(thresholds: Thresholds, trusted: bool, invoice: dic
         cap = thresholds.saas_monthly_cap_cents
     elif category == "meals":
         attendees = invoice.get("attendees")
-        if attendees is not None:
+        if (
+            isinstance(attendees, int)
+            and not isinstance(attendees, bool)
+            and attendees >= 1
+        ):
             cap = attendees * thresholds.meals_per_attendee_cents
 
     return min(base, cap) if cap is not None else base
@@ -116,15 +127,14 @@ def route_invoice(
             effective_ceiling_cents=effective,
         )
 
-    # 2. Agent unavailable (M15 fail-loud): never guess.
+    # 2. Agent unavailable (M15 fail-loud): never guess. Route 2 is a bare
+    # synthesized template -- no notes appended (see decision-order doc and
+    # `_with_notes`'s docstring: routes 1-2 never call it).
     if agent is None:
         return RouterDecision(
             route="human_review",
             violations=["AGENT-UNAVAILABLE", *validation.hard_stops],
-            reasoning=_with_notes(
-                "Agent unavailable after retries — routing to human review.",
-                validation.notes,
-            ),
+            reasoning="Agent unavailable after retries — routing to human review.",
             effective_ceiling_cents=effective,
         )
 

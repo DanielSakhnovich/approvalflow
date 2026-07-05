@@ -54,6 +54,31 @@ def test_meals_missing_attendees():
     assert "MEAL-01" in validate(inv, FX, T).hard_stops
 
 
+def test_meals_string_attendees_hard_stops_without_raising():
+    inv = {**FIXTURES["INV-1001"], "attendees": "2"}
+    r = validate(inv, FX, T)
+    assert "MEAL-01" in r.hard_stops
+
+
+def test_meals_bool_attendees_hard_stops_without_raising():
+    # bool is an int subclass in Python -- must be explicitly excluded.
+    inv = {**FIXTURES["INV-1001"], "attendees": True}
+    r = validate(inv, FX, T)
+    assert "MEAL-01" in r.hard_stops
+
+
+def test_meals_zero_attendees_hard_stops():
+    inv = {**FIXTURES["INV-1001"], "attendees": 0}
+    r = validate(inv, FX, T)
+    assert "MEAL-01" in r.hard_stops
+
+
+def test_meals_negative_attendees_hard_stops():
+    inv = {**FIXTURES["INV-1001"], "attendees": -1}
+    r = validate(inv, FX, T)
+    assert "MEAL-01" in r.hard_stops
+
+
 def test_unknown_currency_is_fx_stop():
     inv = {**FIXTURES["INV-1001"], "currency": "CHF"}
     assert "GLOBAL-FX" in validate(inv, FX, T).hard_stops

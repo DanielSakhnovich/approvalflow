@@ -82,6 +82,7 @@ def _fixtures_and_fx() -> tuple[list[dict], dict]:
 
 
 FIXTURES, FX = _fixtures_and_fx()
+FIXTURES_BY_ID = {f["id"]: f for f in FIXTURES}
 T = Thresholds()
 
 # The one documented exception to "non-auto_approve fixtures stay non-auto
@@ -161,9 +162,6 @@ async def test_the_two_shipped_auto_approve_fixtures_still_auto_approve(routed):
         assert FIXTURES_BY_ID[fid]["expected"]["route"] == "auto_approve"
         decision, _ = routed[fid]
         assert decision.route == "auto_approve"
-
-
-FIXTURES_BY_ID = {f["id"]: f for f in FIXTURES}
 
 
 # --- 2. named, per-fixture proof statements ---------------------------------

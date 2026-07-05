@@ -81,6 +81,22 @@ async def test_1_duplicate_ignores_a_malicious_agent_entirely():
     assert d.route == "duplicate"
 
 
+def test_1_duplicate_with_non_numeric_attendees_does_not_raise():
+    """A meals invoice with a malformed `attendees` (e.g. the string "2")
+    must not crash the ceiling computation even on the `duplicate` branch,
+    which runs before any hard-stop/agent checks but still calls
+    `_effective_ceiling_cents` first."""
+    d = route_invoice(
+        duplicate=True,
+        validation=_validation(hard_stops=["MEAL-01"]),
+        agent=_agent(),
+        thresholds=T,
+        trusted=False,
+        invoice=_invoice(category="meals", attendees="2"),
+    )
+    assert d.route == "duplicate"
+
+
 # --- 2. agent unavailable --------------------------------------------------
 
 
@@ -95,6 +111,24 @@ def test_2_agent_none_routes_human_review():
     )
     assert d.route == "human_review"
     assert d.violations == ["AGENT-UNAVAILABLE", "GLOBAL-VENDOR"]
+
+
+def test_2_agent_none_reasoning_is_template_only_no_notes_appended():
+    """Route 2 (agent unavailable) is a bare synthesized template -- it must
+    NEVER append Gate 2's notes, unlike routes 3-8 which call `_with_notes`."""
+    d = route_invoice(
+        duplicate=False,
+        validation=_validation(
+            hard_stops=["GLOBAL-VENDOR"], notes=["Vendor is unknown"]
+        ),
+        agent=None,
+        thresholds=T,
+        trusted=False,
+        invoice=_invoice(),
+    )
+    assert d.route == "human_review"
+    assert d.reasoning == "Agent unavailable after retries — routing to human review."
+    assert "Vendor is unknown" not in d.reasoning
 
 
 # --- 3. MEAL-03 reject (only reject-severity rule) -------------------------
@@ -271,6 +305,23 @@ def test_5_meals_missing_attendees_does_not_crash_and_uses_no_cap():
     )
     # MEAL-01 hard stop still forces human_review via branch 4, but the
     # ceiling computation itself must not raise (e.g. TypeError on None * int).
+    assert d.route == "human_review"
+    assert d.effective_ceiling_cents == T.ceiling_cents
+
+
+def test_5_meals_non_numeric_attendees_does_not_crash_and_uses_no_cap():
+    """A meals invoice with a non-numeric `attendees` (e.g. the string "2",
+    which Gate 2's MEAL-01 check now rejects) must not crash the router's
+    `attendees * meals_per_attendee_cents` multiplication either -- same
+    defense-in-depth guard as the missing-attendees case above."""
+    d = route_invoice(
+        duplicate=False,
+        validation=_validation(usd_cents=T.ceiling_cents, hard_stops=["MEAL-01"]),
+        agent=_agent(),
+        thresholds=T,
+        trusted=False,
+        invoice=_invoice(category="meals", attendees="2"),
+    )
     assert d.route == "human_review"
     assert d.effective_ceiling_cents == T.ceiling_cents
 
