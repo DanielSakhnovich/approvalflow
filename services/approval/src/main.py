@@ -2,6 +2,7 @@ from afcommon.logging import setup_json_logging
 from afcommon.middleware import CorrelationIdMiddleware
 from fastapi import FastAPI
 
+from .api import router as api_router
 from .subscriptions import router as subscriptions_router
 
 setup_json_logging("approval-svc")
@@ -15,4 +16,5 @@ async def healthz() -> dict:
     return {"status": "ok", "service": "approval-svc"}
 
 
+app.include_router(api_router)
 app.include_router(subscriptions_router)

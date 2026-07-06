@@ -11,6 +11,19 @@ class EscalationStatus(StrEnum):
     needs_info = "needs_info"
 
 
+class AlreadyResolved(Exception):
+    """Raised inside an `ApprovalRepo.resolve()` CAS transform when the
+    escalation's status is already something other than pending. Carries
+    the existing (already-resolved) escalation so the caller can hand back
+    an idempotent-read-back of who/when/what resolved it, instead of a bare
+    conflict."""
+
+    def __init__(self, escalation: "Escalation"):
+        super().__init__(
+            f"escalation {escalation.invoice_id} already resolved as {escalation.status}")
+        self.escalation = escalation
+
+
 class Escalation(BaseModel):
     invoice_id: str
     correlation_id: str
