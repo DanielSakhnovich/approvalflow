@@ -301,6 +301,59 @@ def test_payment_completed_redelivered_event_is_acked_once_effect(env):
     assert r1.status_code == 200 and r2.status_code == 200
 
 
+class _FailOnceThenSucceedPublisher:
+    """Raises on its first call -- simulating `publish(decision-made)`
+    failing while the state store itself stays healthy, the canonical
+    lost-decision case from the T7 review finding -- then succeeds on every
+    call after."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self._raised_once = False
+
+    async def __call__(self, topic: str, payload: dict) -> None:
+        if not self._raised_once:
+            self._raised_once = True
+            raise RuntimeError("simulated publish failure")
+        self.calls.append((topic, payload))
+
+
+def test_redelivery_after_publish_failure_reprocesses_and_publishes_once():
+    """THE KEY TEST for the T7 review fix: EventDedupe used to mark
+    `processed:{event_id}` before `pipeline.handle_submission()` ran. If the
+    pipeline then raised -- here, `publish(decision-made)` failing while the
+    state store stays healthy -- the handler correctly 500'd, but the
+    redelivered copy of the SAME event would just hit the stale mark and be
+    acked as a duplicate, silently losing the decision forever.
+
+    Proves the fix closes that: first delivery of a CloudEvent -> 500,
+    nothing published; second delivery of the *identical* CloudEvent (same
+    event_id) -> 200, and decision-made is published exactly once total
+    (not zero -- the bug -- and not twice)."""
+    store = InMemoryStateStore()
+    dedupe = EventDedupe(store)
+    flaky_publisher = _FailOnceThenSucceedPublisher()
+    pipeline, _trust, _publisher, _store = _make_pipeline(
+        StubAgent(), publisher=flaky_publisher, store=store
+    )
+    app.dependency_overrides[deps.get_dedupe] = lambda: dedupe
+    app.dependency_overrides[deps.get_pipeline] = lambda: pipeline
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        invoice = _fixture("INV-1001")
+        body = _cloudevent(_submission(invoice).model_dump())  # same event_id both times
+
+        first = client.post("/events/invoice-submitted", json=body)
+        assert first.status_code == 500
+        assert len(flaky_publisher.calls) == 0, "must not falsely report success on failure"
+
+        second = client.post("/events/invoice-submitted", json=body)
+        assert second.status_code == 200
+        assert len(flaky_publisher.calls) == 1, "decision-made must reach publisher exactly once"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_invoice_submitted_infra_failure_propagates_500():
     """When the pipeline itself blows up on an infra failure (state store
     unreachable), the handler must NOT swallow it into a 200 ack -- Dapr

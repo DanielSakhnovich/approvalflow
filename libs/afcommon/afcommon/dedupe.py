@@ -32,6 +32,28 @@ class EventDedupe:
         """True the first time `event_id` is seen, False on every redelivery."""
         return await try_register(self._store, f"processed:{event_id}", {"seen": True})
 
+    async def forget(self, event_id: str) -> None:
+        """
+        Best-effort compensation for mark-then-fail handlers: deletes the
+        `processed:{event_id}` mark so a Dapr redelivery of this same event
+        is treated as first-time again instead of being silently swallowed
+        as an already-processed duplicate.
+
+        Intended use: a handler calls `first_time()` before doing its actual
+        work, then the work itself raises (e.g. a downstream `publish()`
+        failing while the state store stays healthy). The resulting 500 to
+        Dapr *should* trigger a redelivery that reprocesses the event for
+        real -- but without undoing the mark first, the redelivered copy
+        would just hit the stale `processed:{event_id}` key and get acked as
+        a duplicate, with no second attempt ever made. Calling `forget()` in
+        that exception path closes that gap.
+
+        This is inherently best-effort: it is itself a state-store call, so
+        if the store is unreachable this will raise too -- callers should
+        catch and log rather than assume the mark is gone.
+        """
+        await self._store.delete(f"processed:{event_id}")
+
 
 def bind_event_context(meta: Any) -> None:
     """

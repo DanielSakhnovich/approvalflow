@@ -25,16 +25,17 @@ Order (exact, matches decisions.md / router.py's decision-order doc):
    from Gate 2, `ceiling_cents` = the router's own effective ceiling) and
    return it.
 
-Every gate binds the logging contextvars (via afcommon's `bind_event_context`,
-D-016) and logs its own outcome, so a single invoice's journey through every
-gate is traceable from the correlation_id/invoice_id alone.
+The logging contextvars (correlation_id/invoice_id) are bound once by the
+caller -- the Dapr subscription handler, via afcommon's `bind_event_context`,
+D-016 -- before `handle_submission` runs, not re-bound per gate here; every
+gate still logs its own outcome, so a single invoice's journey through every
+gate is traceable from those contextvars alone.
 """
 
 import logging
 from collections.abc import Awaitable, Callable
 
 from afcommon.contracts import DecisionMadePayload, InvoiceSubmittedPayload
-from afcommon.dedupe import bind_event_context
 from afcommon.events import TOPIC_DECISION_MADE, new_event_meta
 
 from .agent import DecisionAgent
@@ -68,7 +69,6 @@ class DecisionPipeline:
         self._policy_rules = policy_rules
 
     async def handle_submission(self, payload: InvoiceSubmittedPayload) -> DecisionMadePayload:
-        bind_event_context(payload.meta)
         invoice = payload.invoice
         invoice_id = payload.meta.invoice_id
         vendor = str(invoice.get("vendor", ""))

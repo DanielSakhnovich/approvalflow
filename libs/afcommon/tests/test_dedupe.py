@@ -34,6 +34,25 @@ async def test_first_time_uses_processed_prefix_key():
     assert value == {"seen": True}
 
 
+async def test_forget_makes_a_marked_id_first_time_again():
+    dedupe = EventDedupe(InMemoryStateStore())
+    assert await dedupe.first_time("evt-1") is True
+    assert await dedupe.first_time("evt-1") is False
+
+    await dedupe.forget("evt-1")
+
+    assert await dedupe.first_time("evt-1") is True
+
+
+async def test_forget_of_unknown_id_is_a_noop():
+    store = InMemoryStateStore()
+    dedupe = EventDedupe(store)
+
+    await dedupe.forget("evt-never-seen")  # must not raise
+
+    assert await dedupe.first_time("evt-never-seen") is True
+
+
 # --- bind_event_context --------------------------------------------------
 
 
