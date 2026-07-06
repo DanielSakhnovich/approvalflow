@@ -25,15 +25,19 @@ Two endpoints:
   double-click, gets back a 409 carrying the existing resolution
   (who/when/what) instead of a bare conflict.
 
-  The publish-failure rollback mirrors intake's fail-loud M15: once the
-  resolution CAS has committed and the id has been removed from the queue,
-  a publish failure would otherwise leave a resolved-but-unpublished
-  record -- exactly the invoice-hangs-forever failure M11 exists to
-  prevent, since nothing downstream would ever learn the verdict happened.
-  So a publish exception triggers a compensating CAS back to pending
-  (resolved_* cleared) and a re-add to the queue, and the caller sees 503
+  The publish-failure rollback mirrors intake's fail-loud M15. Ordering is
+  resolve -> publish -> remove_from_queue (publish-before-dequeue), so a
+  publish failure triggers just a compensating CAS back to pending
+  (resolved_* cleared; the id never left the queue) and the caller sees 503
   ("verdict accepted but could not be delivered; retry") -- the record is
-  fully re-approvable afterward, by anyone, including the same approver.
+  fully re-approvable afterward, by anyone, including a different approver
+  with a different verdict. A resolved-but-unpublished record is exactly
+  the invoice-hangs-forever failure M11 exists to prevent, so if the
+  rollback itself fails, that state is logged CRITICAL (manual
+  reconciliation required) and surfaces as an honest 500 -- never silent.
+  A remove_from_queue failure AFTER a successful publish is benign by
+  construction (stale queue id, reaped by the self-healing view) and only
+  logs a warning; the approver still gets their 200.
 """
 
 import logging
@@ -118,8 +122,23 @@ async def submit_verdict(invoice_id: str, body: VerdictRequest,
     except AlreadyResolved as e:
         raise HTTPException(status_code=409, detail=_view(e.escalation)) from e
 
-    await repo.remove_from_queue(invoice_id)
-
+    # Ordering is deliberate: resolve -> PUBLISH -> remove_from_queue.
+    #
+    # Publishing before dequeuing means a queue-write hiccup can never strand
+    # a resolved-but-unpublished record (the permanent-hang M11 exists to
+    # prevent): once publish succeeds, the worst leftover is a stale queue id,
+    # which the self-healing queue view reaps and any second verdict answers
+    # with a 409 read-back. The reverse order would convert that same hiccup
+    # into an invoice invisible forever (resolved, never published, retries
+    # 409, self-heal reaps the queue id).
+    #
+    # AT-LEAST-ONCE CONTRACT: the rollback-then-retry path below makes
+    # `approval-resolved` at-least-once PER INVOICE, and every attempt
+    # carries a FRESH event_id (new_event_meta) -- e.g. the broker accepts
+    # the publish but our side sees a transport error, we roll back, and a
+    # later retry publishes again with a new event_id. Downstream consumers
+    # (the Phase 05 payment saga) MUST therefore be idempotent per
+    # invoice_id, NOT per event_id.
     payload = ApprovalResolvedPayload(
         meta=new_event_meta(invoice_id, resolved.correlation_id),
         verdict=body.verdict,
@@ -141,11 +160,32 @@ async def submit_verdict(invoice_id: str, body: VerdictRequest,
                 "resolution_comment": "",
             })
 
-        await repo.resolve(invoice_id, revert)
-        await repo.add_to_queue(invoice_id)
+        # The id never left the queue (publish precedes remove_from_queue),
+        # so the compensating CAS is the entire rollback -- no re-add needed.
+        try:
+            await repo.resolve(invoice_id, revert)
+        except Exception:
+            log.critical(
+                "rollback FAILED for invoice_id=%s: record is "
+                "resolved-but-unpublished; manual reconciliation required",
+                invoice_id)
+            raise
         raise HTTPException(
             status_code=503,
             detail="verdict accepted but could not be delivered; retry") from e
+
+    try:
+        await repo.remove_from_queue(invoice_id)
+    except Exception:
+        # The resolution and its delivery -- the real work -- both succeeded.
+        # All this failure leaves behind is a stale queue id, which the
+        # self-healing queue view reaps (and any second verdict gets a 409
+        # read-back), so log and still hand the approver their 200 rather
+        # than failing an already-delivered verdict.
+        log.warning(
+            "remove_from_queue failed for invoice_id=%s after successful publish; "
+            "stale queue id will be reaped by the self-healing queue view",
+            invoice_id, exc_info=True)
 
     log.info("verdict resolved")
     return _view(resolved)

@@ -12,9 +12,12 @@ verdict -- everyone else, including a genuine concurrent racer under
 The publish-failure rollback (F5-critical, mirrors intake's fail-loud M15)
 is the other half: a resolution CAS-committed but never published would
 leave the invoice hanging forever (the exact failure M11 exists to
-prevent), so a publish exception triggers a compensating CAS back to
-pending plus a re-add to the queue, and the caller sees 503 -- and the
-record must be re-approvable afterward.
+prevent). Ordering is resolve -> publish -> remove_from_queue, so on a
+publish exception the compensating CAS back to pending is the whole
+rollback (the id never left the queue), the caller sees 503, and the
+record must be fully re-approvable afterward -- by a different approver
+with a different verdict. If the rollback itself fails, that is the one
+state that must never be silent: log critical + honest 500.
 """
 
 import asyncio
@@ -237,7 +240,10 @@ async def test_concurrent_racing_verdicts_exactly_one_wins():
 
 
 class TestPublishFailureRollback:
-    async def test_publish_failure_rolls_back_and_requeues(self, env):
+    async def test_publish_failure_rolls_back_and_id_stays_in_queue(self, env):
+        """Publish runs BEFORE remove_from_queue, so on publish failure the
+        rollback is just the compensating revert -- the id never left the
+        queue and must still be there, with the record back to pending."""
         client, repo, _ = env
         await seed(repo, make_escalation("inv-flaky", "2024-01-01T00:00:00+00:00"))
 
@@ -256,6 +262,9 @@ class TestPublishFailureRollback:
         assert await repo.list_queue() == ["inv-flaky"]
 
     async def test_retry_after_rollback_succeeds_with_exactly_one_publish(self, env):
+        """Full re-approvability: a DIFFERENT approver with a DIFFERENT
+        verdict succeeds after the rollback -- the rolled-back record is not
+        sticky to the first attempt in any way."""
         client, repo, published = env
         await seed(repo, make_escalation("inv-flaky", "2024-01-01T00:00:00+00:00"))
 
@@ -272,10 +281,74 @@ class TestPublishFailureRollback:
         app.dependency_overrides[deps.get_publisher] = lambda: good_publish
 
         second = client.post("/api/approvals/inv-flaky/verdict",
-                             json={"verdict": "approved", "approver_id": "lena"})
+                             json={"verdict": "rejected", "approver_id": "marco",
+                                   "comment": "over budget"})
         assert second.status_code == 200
         assert len(published) == 1
+        assert published[0][1]["verdict"] == "rejected"
+        assert published[0][1]["approver_id"] == "marco"
 
         record = await repo.get("inv-flaky")
-        assert record.status == EscalationStatus.approved
+        assert record.status == EscalationStatus.rejected
+        assert record.resolved_by == "marco"
+        assert await repo.list_queue() == []
+
+    async def test_rollback_failure_is_loud_500_and_logged_critical(self, env, caplog):
+        """If the compensating revert itself fails, the record is
+        resolved-but-unpublished -- the one state that must NEVER be silent.
+        The endpoint must log critical (invoice_id + manual reconciliation)
+        and re-raise, so the caller sees an honest 500, not a retryable 503
+        that would 409 on retry."""
+        client, repo, _ = env
+        await seed(repo, make_escalation("inv-doomed", "2024-01-01T00:00:00+00:00"))
+
+        async def flaky_publish(topic: str, payload: dict) -> None:
+            raise RuntimeError("sidecar down")
+
+        original_resolve = repo.resolve
+        calls = {"n": 0}
+
+        async def resolve_fails_second_time(invoice_id, transform):
+            calls["n"] += 1
+            if calls["n"] == 2:  # the compensating revert
+                raise RuntimeError("state store down too")
+            return await original_resolve(invoice_id, transform)
+
+        repo.resolve = resolve_fails_second_time
+        app.dependency_overrides[deps.get_publisher] = lambda: flaky_publish
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.post("/api/approvals/inv-doomed/verdict",
+                           json={"verdict": "approved", "approver_id": "lena"})
+        assert resp.status_code == 500
+        critical = [r for r in caplog.records if r.levelname == "CRITICAL"]
+        assert any("inv-doomed" in r.getMessage() for r in critical)
+        assert any("manual reconciliation" in r.getMessage() for r in critical)
+
+    async def test_remove_from_queue_failure_after_publish_still_200(self, env, caplog):
+        """Publish succeeded -- the resolution and its delivery are the real
+        work. A remove_from_queue failure afterwards leaves only a stale
+        queue id: the self-healing queue view reaps it, and any second
+        verdict gets a 409 read-back. So the endpoint logs a warning and
+        still returns 200 rather than failing an already-delivered verdict."""
+        client, repo, published = env
+        await seed(repo, make_escalation("inv-sticky", "2024-01-01T00:00:00+00:00"))
+
+        async def broken_remove(invoice_id):
+            raise RuntimeError("queue write failed")
+
+        repo.remove_from_queue = broken_remove
+
+        resp = client.post("/api/approvals/inv-sticky/verdict",
+                           json={"verdict": "approved", "approver_id": "lena"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "approved"
+        assert len(published) == 1
+        assert any(r.levelname == "WARNING" and "inv-sticky" in r.getMessage()
+                   for r in caplog.records)
+
+        # The stale queue id is then reaped by the self-healing queue view.
+        del repo.remove_from_queue  # restore the real (class) method
+        queue_resp = client.get("/api/approvals/queue")
+        assert queue_resp.json()["items"] == []
         assert await repo.list_queue() == []

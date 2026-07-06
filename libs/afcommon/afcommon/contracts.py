@@ -25,6 +25,10 @@ class DecisionMadePayload(BaseModel):
 
 
 class ApprovalResolvedPayload(BaseModel):
+    """AT-LEAST-ONCE per invoice, fresh event_id per attempt (approval's
+    publish-failure rollback + retry): consumers must be idempotent per
+    invoice_id, not per event_id."""
+
     meta: EventMeta
     verdict: Verdict
     approver_id: str
