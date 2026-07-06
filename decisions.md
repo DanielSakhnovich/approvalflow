@@ -302,6 +302,8 @@ recurring) — the fixture file explicitly invites expanding the set.
 - Vendor-history lookup enters the router path (one Dapr state read) + more router tests (~half a day).
 - Uplift tier needs our own fixtures to demonstrate — new test surface we author ourselves.
 
+**Correction (2026-07-06, Phase 03):** the trusted-uplift example must use a category without its own cap (e.g. travel) — a SaaS item stays capped at $200/mo regardless of trust, so a SaaS uplift example would be misleading. The router implements uplift as min(trusted_base, category_cap).
+
 ---
 
 ## D-016 — Consumer-dedupe wrapper extracted into afcommon
