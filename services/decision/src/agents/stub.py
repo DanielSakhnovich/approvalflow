@@ -15,7 +15,7 @@ notes, which must have zero effect on the output.
 
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
 
-from services.decision.src.agent import AgentRecommendation
+from ..agent import AgentRecommendation
 
 _SAAS_MONTHLY_CAP_CENTS = 20000
 _MEALS_PER_ATTENDEE_CENTS = 7500

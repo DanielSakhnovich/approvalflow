@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 from pydantic import ValidationError
 
-from services.decision.src.agent import AgentRecommendation
+from ..agent import AgentRecommendation
 
 _RETRYABLE_STATUSES_FLOOR = 500  # any 5xx
 _RATE_LIMITED = 429

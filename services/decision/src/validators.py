@@ -60,7 +60,7 @@ from decimal import ROUND_HALF_UP, Decimal, DecimalException, InvalidOperation
 
 from pydantic import BaseModel
 
-from services.decision.src.config import Thresholds
+from .config import Thresholds
 
 GLOBAL_MALFORMED = "GLOBAL-MALFORMED"
 

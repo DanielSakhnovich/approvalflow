@@ -46,9 +46,9 @@ Decision order (exact; first match wins) -- see docs/superpowers/plans/
 from afcommon.contracts import Route
 from pydantic import BaseModel
 
-from services.decision.src.agent import AgentRecommendation
-from services.decision.src.config import Thresholds
-from services.decision.src.validators import ValidationResult
+from .agent import AgentRecommendation
+from .config import Thresholds
+from .validators import ValidationResult
 
 
 class RouterDecision(BaseModel):
