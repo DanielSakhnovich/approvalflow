@@ -215,3 +215,35 @@ class TestQueue:
         queue = await repo.list_queue()
         assert set(queue) == {"inv-1", "inv-2"}
         assert len(queue) == 2
+
+
+class TestFromDecision:
+    """The wire-facing constructor Task 2's subscriber depends on."""
+
+    def test_maps_payload_fields(self, decision_payload, invoice_id, correlation_id):
+        esc = Escalation.from_decision(decision_payload)
+        assert esc.invoice_id == invoice_id
+        assert esc.correlation_id == correlation_id
+        assert esc.status == EscalationStatus.pending
+        assert esc.usd_cents == 50000
+        assert esc.route_violations == ["policy_a", "policy_b"]
+        assert esc.recommendation == "Escalate to management"
+        assert esc.confidence == 0.75
+        assert esc.reasoning == "High value and policy violation"
+        assert esc.resolved_at is None and esc.resolved_by is None
+        # escalated_at comes from the event meta: ISO 8601 with UTC offset
+        assert esc.escalated_at.endswith("+00:00")
+
+    def test_display_fields_empty_without_invoice(self, decision_payload):
+        esc = Escalation.from_decision(decision_payload)
+        assert (esc.vendor, esc.submitter, esc.category) == ("", "", "")
+
+    def test_invoice_enrichment_populates_display_fields(self, decision_payload):
+        esc = Escalation.from_decision(
+            decision_payload,
+            invoice={"vendor": "Bistro 19", "submitter": "dana@northwind.example",
+                     "category": "meals"},
+        )
+        assert esc.vendor == "Bistro 19"
+        assert esc.submitter == "dana@northwind.example"
+        assert esc.category == "meals"

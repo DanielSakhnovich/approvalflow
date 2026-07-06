@@ -30,15 +30,17 @@ class Escalation(BaseModel):
 
     @classmethod
     def from_decision(
-        payload: DecisionMadePayload, invoice: dict | None = None
+        cls, payload: DecisionMadePayload, invoice: dict | None = None
     ) -> "Escalation":
         """Create an Escalation from a DecisionMadePayload.
 
-        The Phase 03 payload carries no submission context, so vendor/submitter/category
-        remain empty strings. Enrichment with invoice data is optional and does not
-        populate these fields (that enrichment is deferred to Phase 04).
+        The decision-made payload carries no submission context, so vendor/submitter/
+        category default to empty strings. Passing the original invoice dict (fixture
+        shape) enriches those three display fields; no caller does so yet — the wire
+        payload is all Phase 04 has.
         """
-        return Escalation(
+        invoice = invoice or {}
+        return cls(
             invoice_id=payload.meta.invoice_id,
             correlation_id=payload.meta.correlation_id,
             status=EscalationStatus.pending,
@@ -47,8 +49,8 @@ class Escalation(BaseModel):
             recommendation=payload.recommendation,
             confidence=payload.confidence,
             reasoning=payload.reasoning,
-            submitter="",
-            vendor="",
-            category="",
+            submitter=str(invoice.get("submitter", "") or ""),
+            vendor=str(invoice.get("vendor", "") or ""),
+            category=str(invoice.get("category", "") or ""),
             escalated_at=payload.meta.occurred_at,
         )
