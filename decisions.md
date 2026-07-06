@@ -304,6 +304,8 @@ recurring) — the fixture file explicitly invites expanding the set.
 
 **Correction (2026-07-06, Phase 03):** the trusted-uplift example must use a category without its own cap (e.g. travel) — a SaaS item stays capped at $200/mo regardless of trust, so a SaaS uplift example would be misleading. The router implements uplift as min(trusted_base, category_cap).
 
+**M12 transparency note (2026-07-06, Phase 03):** the adversarial proof (`services/decision/tests/test_m12_adversarial.py`) shows a malicious agent cannot move money past ANY amount/ceiling/hard-stop guard — 19 of the 20 shipped fixtures keep their non-auto route even under an always-approve agent. The single exception is INV-1015 (alcohol-only, $60): rule MEAL-03 is semantic knowledge only the agent supplies, so an agent that suppresses it lets that in-budget item through. This does not weaken the ceiling guarantee — the blast radius of any such miss is bounded by the autonomy ceiling itself — but it is the honest limit of "deterministic" enforcement: category-content rules are agent-graded by design. Documented here so the M12 claim is read with its exact scope.
+
 ---
 
 ## D-016 — Consumer-dedupe wrapper extracted into afcommon
