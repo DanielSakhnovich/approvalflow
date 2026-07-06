@@ -1,8 +1,7 @@
 from enum import StrEnum
 
-from pydantic import BaseModel
-
 from afcommon.contracts import DecisionMadePayload
+from pydantic import BaseModel
 
 
 class EscalationStatus(StrEnum):

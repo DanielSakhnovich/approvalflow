@@ -1,10 +1,10 @@
 import asyncio
 
 import pytest
-
 from afcommon.contracts import DecisionMadePayload
-from afcommon.events import EventMeta, new_event_meta
+from afcommon.events import new_event_meta
 from afcommon.state import InMemoryStateStore, YieldingStateStore
+
 from services.approval.src.models import Escalation, EscalationStatus
 from services.approval.src.repo import ApprovalRepo
 
