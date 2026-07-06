@@ -30,11 +30,18 @@ redelivery that actually reprocesses the event instead of silently
 hitting a stale mark.
 
 `save_new` returning False means this exact invoice already has an
-escalation record -- e.g. a second, distinct decision-made event (a
-different event_id) for an invoice that's already pending or resolved.
-That's a legitimate business outcome, not a failure: it's logged and
-acked, and the pending queue is left untouched (no redundant
-`add_to_queue` call).
+escalation record -- either a second, distinct decision-made event (a
+different event_id) for an invoice that's already escalated, OR the
+redelivery of an event whose first attempt failed *between* `save_new`
+and `add_to_queue` (record durably written, queue write lost). Those two
+cases are indistinguishable at the `save_new` return value, so the
+handler disambiguates on the existing record's status: if it's still
+`pending`, `add_to_queue` is called anyway -- it's idempotent, so the
+legitimate already-queued case is a harmless no-op, while the
+partial-failure case gets the invoice back in front of approvers instead
+of being acked into permanent invisibility. Only a genuinely resolved
+escalation (approved/rejected/needs_info) skips the queue: its human
+review is done and it must not reappear.
 """
 
 import logging
@@ -45,7 +52,7 @@ from afcommon.events import PUBSUB_NAME, TOPIC_DECISION_MADE
 from fastapi import APIRouter, Depends
 
 from .deps import get_dedupe, get_repo
-from .models import Escalation
+from .models import Escalation, EscalationStatus
 from .repo import ApprovalRepo
 
 log = logging.getLogger(__name__)
@@ -89,15 +96,30 @@ async def on_decision_made(
         return _ACK
 
     try:
+        invoice_id = payload.meta.invoice_id
         escalation = Escalation.from_decision(payload)
         created = await repo.save_new(escalation)
         if not created:
-            log.info(
-                "escalation already exists for invoice_id=%s; acked",
-                payload.meta.invoice_id,
-            )
+            # Record already exists: either a redundant decision-made for an
+            # already-escalated invoice, or the redelivery of an event whose
+            # first attempt died between save_new and add_to_queue. If it's
+            # still pending, re-queue (idempotent) so a lost queue write
+            # can't leave the escalation invisible to approvers forever.
+            existing = await repo.get(invoice_id)
+            if existing is not None and existing.status == EscalationStatus.pending:
+                log.info(
+                    "escalation already exists and is pending for invoice_id=%s; "
+                    "re-queueing (idempotent) and acking",
+                    invoice_id,
+                )
+                await repo.add_to_queue(invoice_id)
+            else:
+                log.info(
+                    "escalation already resolved for invoice_id=%s; acked without queueing",
+                    invoice_id,
+                )
             return _ACK
-        await repo.add_to_queue(payload.meta.invoice_id)
+        await repo.add_to_queue(invoice_id)
     except Exception:
         await _compensate_forget(dedupe, event_id)
         raise

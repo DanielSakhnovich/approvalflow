@@ -40,6 +40,25 @@ class _FailOnceThenSucceedRepo(ApprovalRepo):
         return await super().save_new(esc)
 
 
+class _QueueFailsOnceRepo(ApprovalRepo):
+    """save_new succeeds, but the FIRST `add_to_queue` call raises -- the
+    partial-failure window from the review: the escalation record is
+    durably written, then the queue write blows up. The redelivered event
+    sees save_new return False (record already exists) and must still get
+    the invoice into the queue, or the escalation is invisible to
+    approvers forever."""
+
+    def __init__(self, store):
+        super().__init__(store)
+        self._raised_once = False
+
+    async def add_to_queue(self, invoice_id):
+        if not self._raised_once:
+            self._raised_once = True
+            raise RuntimeError("simulated queue failure")
+        await super().add_to_queue(invoice_id)
+
+
 def cloudevent(payload: dict) -> dict:
     return {"specversion": "1.0", "type": "com.dapr.event.sent", "topic": "x", "data": payload}
 
@@ -153,9 +172,10 @@ async def test_redelivered_human_review_event_applies_once(env):
 
 async def test_already_escalated_invoice_acks_without_touching_queue(env):
     """A second, distinct decision-made event (different event_id) for an
-    invoice that already has an escalation record -- e.g. decision-svc
-    re-publishing -- must be acked, log, and leave the queue untouched
-    rather than calling add_to_queue again."""
+    invoice that already has a pending escalation record -- e.g.
+    decision-svc re-publishing -- must be acked and leave the queue
+    observably unchanged (the idempotent re-queue is a no-op: still one
+    entry, not duplicated)."""
     client, repo, _dedupe = env
     first = decision_payload("inv-4", event_id="evt-a")
     client.post("/events/decision-made", json=cloudevent(first))
@@ -192,3 +212,58 @@ def test_post_mark_failure_forgets_dedupe_so_redelivery_succeeds():
         assert second.status_code == 200
     finally:
         app.dependency_overrides.clear()
+
+
+async def test_queue_failure_after_save_requeues_pending_on_redelivery():
+    """THE BINDING TEST for the review's Critical finding: save_new
+    SUCCEEDS, then add_to_queue RAISES. First delivery must 500 (dedupe
+    forgotten). The redelivered event then sees save_new return False --
+    the record already exists -- but because the escalation is still
+    `pending`, the handler must call add_to_queue anyway (idempotent) so
+    the invoice actually reaches the approvers' queue instead of being
+    acked into permanent invisibility."""
+    store = InMemoryStateStore()
+    dedupe = EventDedupe(store)
+    flaky_repo = _QueueFailsOnceRepo(store)
+    app.dependency_overrides[deps.get_repo] = lambda: flaky_repo
+    app.dependency_overrides[deps.get_dedupe] = lambda: dedupe
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        payload = decision_payload("inv-6")  # same event_id both times
+
+        first = client.post("/events/decision-made", json=cloudevent(payload))
+        assert first.status_code == 500
+        # Partial failure: record written, queue write failed.
+        assert await flaky_repo.get("inv-6") is not None
+        assert await flaky_repo.list_queue() == []
+
+        second = client.post("/events/decision-made", json=cloudevent(payload))
+        assert second.status_code == 200
+        assert await flaky_repo.list_queue() == ["inv-6"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+async def test_resolved_escalation_duplicate_decision_keeps_queue_empty(env):
+    """Pins the pending-vs-resolved distinction: a redundant decision-made
+    (new event_id) arriving AFTER the escalation has been resolved must be
+    acked without re-queueing -- the invoice's human review is done and it
+    must not reappear in front of approvers."""
+    client, repo, _dedupe = env
+    first = decision_payload("inv-7", event_id="evt-r1")
+    client.post("/events/decision-made", json=cloudevent(first))
+    await repo.remove_from_queue("inv-7")
+    await repo.resolve(
+        "inv-7",
+        lambda esc: esc.model_copy(
+            update={"status": EscalationStatus.approved, "resolved_by": "lena@northwind.example"}
+        ),
+    )
+
+    late_duplicate = decision_payload("inv-7", event_id="evt-r2")
+    resp = client.post("/events/decision-made", json=cloudevent(late_duplicate))
+    assert resp.status_code == 200
+
+    assert await repo.list_queue() == []
+    stored = await repo.get("inv-7")
+    assert stored.status == EscalationStatus.approved
