@@ -3,9 +3,8 @@ import asyncio
 import pytest
 from afcommon.contracts import DecisionMadePayload
 from afcommon.events import new_event_meta
-from afcommon.state import InMemoryStateStore
+from afcommon.state import InMemoryStateStore, YieldingStateStore
 
-from libs.afcommon.tests.test_state import YieldingStateStore
 from services.intake.src.models import InvoiceRecord, InvoiceStatus, touch
 from services.intake.src.repo import IntakeRepo
 from services.intake.src.status import IllegalTransition, apply_decision

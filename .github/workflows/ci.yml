@@ -14,6 +14,15 @@ jobs:
       - name: Install deps
         run: |
           pip install -r requirements-dev.txt -e libs/afcommon
+      - name: Guard against dev-shim imports (must use installed package names)
+        run: |
+          ! grep -rn "from libs\.\|import libs\." services/ libs/ --include='*.py'
+      - name: Guard against absolute self-imports in service code (break inside containers)
+        run: |
+          # Service src/ modules must use relative imports within their own package:
+          # 'from services.X.src...' resolves under pytest (repo root on sys.path) but
+          # crashes in the container, where src/ is copied to /app/src. Caught live twice.
+          ! grep -rn "from services\.\|import services\." services/*/src/ --include='*.py'
       - name: Lint
         run: ruff check .
       - name: Unit & integration tests (stub adapter only — no LLM in CI)

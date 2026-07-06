@@ -91,7 +91,9 @@ submitted → evaluating → { rejected | duplicate                     (termina
    **router gate #1** (D-011) with atomic ETag check-and-register — uniform `decision.made` flow,
    no second agent call, handles concurrent identical submissions. Fingerprint stores owning
    `invoiceId`, so a send-back resubmission is not its own duplicate.
-2. *Redelivered events*: every consumer records processed `eventId`s and skips repeats.
+2. *Redelivered events*: every consumer records processed `eventId`s and skips repeats — one
+   shared implementation in afcommon (`EventDedupe`, D-016); dedupe state stays per-service via
+   Dapr's app-id key prefix (D-015).
 3. *Retried payments*: saga record + provider idempotency key = `invoiceId`.
 
 ## 4. Decision service

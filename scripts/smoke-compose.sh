@@ -116,9 +116,10 @@ asyncio.run(main())
 "
 
 echo "--- intake E2E ---"
+PAYLOAD='{"id":"INV-1001","submitter":"dana.cohen@northwind.example","department":"engineering-2026Q2","vendor":"Bistro 19","vendorKnown":true,"invoiceNumber":"NW-INV-7781","currency":"USD","category":"meals","attendees":1,"lineItems":[{"description":"Team lunch","quantity":1,"unitPrice":38.89}],"taxAmount":3.11,"total":42.0,"receiptPresent":true,"date":"2026-05-12","notes":"smoke"}'
 TRACKING=$(curl -sf -X POST http://localhost:8001/api/invoices \
   -H 'Content-Type: application/json' \
-  -d '{"id":"INV-1001","submitter":"dana.cohen@northwind.example","department":"engineering-2026Q2","vendor":"Bistro 19","vendorKnown":true,"invoiceNumber":"NW-INV-7781","currency":"USD","category":"meals","attendees":1,"lineItems":[{"description":"Team lunch","quantity":1,"unitPrice":38.89}],"taxAmount":3.11,"total":42.0,"receiptPresent":true,"date":"2026-05-12","notes":"smoke"}' \
+  -d "$PAYLOAD" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
 echo "tracking: $TRACKING"
 
@@ -127,14 +128,62 @@ STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
 [ "$STATUS" = "evaluating" ] || { echo "FAIL: expected evaluating, got $STATUS"; exit 1; }
 
 # loopback proof: intake's own subscription received the event it published
-# (poll dapr subscription delivery via the dedupe key appearing in redis)
-sleep 2
-docker compose exec -T redis redis-cli --scan --pattern 'intake-api||processed:*' | grep -q processed \
-  || { echo "FAIL: no processed-event key — pub/sub loopback did not deliver"; exit 1; }
+# (poll dapr subscription delivery via the dedupe key appearing in redis; a
+# fixed single sleep is flaky now that decision-svc's sidecar is also
+# contending for startup resources -- delivery still lands, just not always
+# inside a fixed 2s window, so poll instead of widening a static sleep)
+FOUND=""
+for i in $(seq 1 15); do
+  if docker compose exec -T redis redis-cli --scan --pattern 'intake-api||processed:*' | grep -q processed; then
+    FOUND=1
+    break
+  fi
+  sleep 1
+done
+[ -n "$FOUND" ] || { echo "FAIL: no processed-event key — pub/sub loopback did not deliver"; exit 1; }
 
 curl -sf http://localhost:8001/api/dashboard | grep -q '"submitted"' \
   || { echo "FAIL: dashboard missing submitted counter"; exit 1; }
 echo "INTAKE E2E: OK"
+
+echo "=== waiting for decision-svc to become healthy ==="
+for i in $(seq 1 30); do
+  status="$(docker compose ps decision-svc --format '{{.Health}}' 2>/dev/null || true)"
+  if [ "$status" = "healthy" ]; then
+    echo "decision-svc is healthy (after ${i}x2s)"
+    break
+  fi
+  sleep 2
+done
+
+echo "--- decision E2E (auto-approve through two services) ---"
+for i in $(seq 1 30); do
+  STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$STATUS" = "approved" ] && break
+  sleep 1
+done
+[ "$STATUS" = "approved" ] || { echo "FAIL: expected approved, got $STATUS"; exit 1; }
+ROUTE=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['route'])")
+[ "$ROUTE" = "auto_approve" ] || { echo "FAIL: route=$ROUTE"; exit 1; }
+curl -sf http://localhost:8001/api/dashboard | grep -q '"decided_auto_approve"' \
+  || { echo "FAIL: dashboard missing decided_auto_approve"; exit 1; }
+# duplicate short-circuit across services: resubmit the same payload, expect duplicate
+TRACK2=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+  -d "$PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
+for i in $(seq 1 30); do
+  S2=$(curl -sf "http://localhost:8001/api/invoices/$TRACK2" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$S2" = "duplicate" ] && break
+  sleep 1
+done
+[ "$S2" = "duplicate" ] || { echo "FAIL: duplicate expected, got $S2"; exit 1; }
+echo "DECISION E2E: OK"
+
+echo "=== curl http://localhost:8002/api/config/thresholds ==="
+curl -sf http://localhost:8002/api/config/thresholds | grep -q 25000 \
+  || { echo "FAIL: thresholds endpoint missing expected ceiling_cents"; exit 1; }
 
 echo "=== docker compose down ==="
 docker compose down

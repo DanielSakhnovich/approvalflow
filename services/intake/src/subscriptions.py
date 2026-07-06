@@ -8,6 +8,7 @@ from afcommon.contracts import (
     PaymentCompletedPayload,
     PaymentFailedPayload,
 )
+from afcommon.dedupe import bind_event_context, parse_cloudevent
 from afcommon.events import (
     PUBSUB_NAME,
     TOPIC_APPROVAL_RESOLVED,
@@ -16,7 +17,6 @@ from afcommon.events import (
     TOPIC_PAYMENT_COMPLETED,
     TOPIC_PAYMENT_FAILED,
 )
-from afcommon.logging import correlation_id_var, invoice_id_var
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
@@ -57,14 +57,14 @@ async def _handle(repo: IntakeRepo, payload, apply_fn) -> InvoiceRecord | None:
     success, or None if the event was a no-op (duplicate, unknown invoice, or
     an illegal/out-of-order transition) - callers must still ack in all cases.
     """
-    meta = payload.meta
-    invoice_id_var.set(meta.invoice_id)
-    correlation_id_var.set(meta.correlation_id)
-    if not await repo.first_time_event(meta.event_id):
+    bind_event_context(payload.meta)
+    if not await repo.first_time_event(payload.meta.event_id):
         log.info("duplicate event skipped")
         return None
     try:
-        return await repo.update_record(meta.invoice_id, lambda rec: apply_fn(rec, payload))
+        return await repo.update_record(
+            payload.meta.invoice_id, lambda rec: apply_fn(rec, payload)
+        )
     except KeyError:
         log.warning("event for unknown invoice; acked")
         return None
@@ -76,7 +76,7 @@ async def _handle(repo: IntakeRepo, payload, apply_fn) -> InvoiceRecord | None:
 @router.post("/events/" + TOPIC_INVOICE_SUBMITTED)
 async def on_invoice_submitted(event: CloudEvent,
                                repo: IntakeRepo = Depends(get_repo)) -> dict:
-    payload = InvoiceSubmittedPayload.model_validate(event.data)
+    payload = parse_cloudevent(InvoiceSubmittedPayload, event.model_dump())
     await repo.first_time_event(payload.meta.event_id)
     return _ACK  # intake already updated its own record at POST time
 
@@ -84,7 +84,7 @@ async def on_invoice_submitted(event: CloudEvent,
 @router.post("/events/" + TOPIC_DECISION_MADE)
 async def on_decision_made(event: CloudEvent,
                            repo: IntakeRepo = Depends(get_repo)) -> dict:
-    payload = DecisionMadePayload.model_validate(event.data)
+    payload = parse_cloudevent(DecisionMadePayload, event.model_dump())
     updated = await _handle(repo, payload, apply_decision)
     if updated is not None:
         await repo.bump_counters(**{f"decided_{payload.route}": 1})
@@ -94,7 +94,7 @@ async def on_decision_made(event: CloudEvent,
 @router.post("/events/" + TOPIC_APPROVAL_RESOLVED)
 async def on_approval_resolved(event: CloudEvent,
                                repo: IntakeRepo = Depends(get_repo)) -> dict:
-    payload = ApprovalResolvedPayload.model_validate(event.data)
+    payload = parse_cloudevent(ApprovalResolvedPayload, event.model_dump())
     updated = await _handle(repo, payload, apply_approval)
     if updated is not None:
         await repo.bump_counters(**{f"verdict_{payload.verdict}": 1})
@@ -104,7 +104,7 @@ async def on_approval_resolved(event: CloudEvent,
 @router.post("/events/" + TOPIC_PAYMENT_COMPLETED)
 async def on_payment_completed(event: CloudEvent,
                                repo: IntakeRepo = Depends(get_repo)) -> dict:
-    payload = PaymentCompletedPayload.model_validate(event.data)
+    payload = parse_cloudevent(PaymentCompletedPayload, event.model_dump())
     updated = await _handle(repo, payload, apply_payment_completed)
     if updated is not None:
         bucket = "paid_auto_cents" if updated.decided_by == "router" else "paid_human_cents"
@@ -115,7 +115,7 @@ async def on_payment_completed(event: CloudEvent,
 @router.post("/events/" + TOPIC_PAYMENT_FAILED)
 async def on_payment_failed(event: CloudEvent,
                             repo: IntakeRepo = Depends(get_repo)) -> dict:
-    payload = PaymentFailedPayload.model_validate(event.data)
+    payload = parse_cloudevent(PaymentFailedPayload, event.model_dump())
     updated = await _handle(repo, payload, apply_payment_failed)
     if updated is not None:
         await repo.bump_counters(payment_failed=1)
