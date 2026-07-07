@@ -223,8 +223,12 @@ echo "--- restarting approval-svc (the M11 moment) ---"
 # Python/uvicorn app's, the sidecar reliably finishes (and re-joins the
 # namespace) *before* approval-svc has torn down and recreated its own
 # namespace, permanently orphaning the sidecar (httpx.ConnectError inside
-# the app forever after, reproduced 5/5 in manual trials -- not a transient
-# race that more waiting fixes). Restarting approval-svc, waiting for it to
+# the app forever after -- not a transient race that more waiting fixes).
+# Independently reproduced during review (2026-07-07): after the joint
+# restart, daprd logged a clean startup (placement connected) yet
+# localhost:3500 stayed connection-refused from inside the app container
+# 45+ seconds later -- daprd's sockets live in the app's dead pre-restart
+# namespace. Restarting approval-svc, waiting for it to
 # be healthy again, and only then restarting its sidecar is the same real
 # restart (both containers really do restart) made deterministic instead of
 # racy; this is not a sleep-based workaround for a flaky assertion, it's
