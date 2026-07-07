@@ -1,0 +1,229 @@
+"""PaymentSaga (Task 3): the money-consistency core (M9/M10/M12, journey D).
+
+A persisted-step saga keyed by `saga:{invoice_id}`. Every step writes its
+marker before doing the next side effect, so a crash between steps resumes
+from the last durable marker (step 3/4 below) instead of replaying from
+scratch or losing track of a reservation.
+
+Per-invoice idempotency via that record is THE at-least-once guarantee:
+`approval-resolved` (and any other trigger) is at-least-once *per invoice*,
+not per event_id (fresh event_id per retry), so handle() must be safe to call
+twice for the same invoice_id with two entirely different event/correlation
+contexts. Once a saga reaches a terminal state (paid, compensated,
+rejected_insufficient_budget) it is returned unchanged -- no re-reserve, no
+re-execute, no re-publish.
+
+M12 layer 4 (defense-in-depth): even though decision-svc and approval-svc
+already gate the ceiling, payment re-checks it independently for auto-routed
+amounts. If it's ever violated here, BOTH services would have to be wrong
+for money to actually move -- so this is a loud refusal (log.critical), not
+a quiet fallback. Human-approved amounts (auto_route=False) skip this check
+entirely: human approval IS the authorization for above-ceiling amounts.
+"""
+
+import logging
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from enum import StrEnum
+
+from afcommon.contracts import PaymentCompletedPayload, PaymentFailedPayload
+from afcommon.events import TOPIC_PAYMENT_COMPLETED, TOPIC_PAYMENT_FAILED, new_event_meta
+from afcommon.state import StateStore, cas_update
+from pydantic import BaseModel
+
+from .budgets import BudgetStore
+from .provider import MockPaymentProvider, PaymentDeclined
+
+log = logging.getLogger(__name__)
+
+Publisher = Callable[[str, dict], Awaitable[None]]
+
+_SAGA_KEY_PREFIX = "saga:"
+
+_REASON_INSUFFICIENT_BUDGET = "insufficient_budget"
+_REASON_CEILING_VIOLATION = "ceiling-violation"
+_REASON_PAYMENT_DECLINED = "payment_declined"
+
+
+class SagaState(StrEnum):
+    started = "started"
+    reserved = "reserved"
+    paid = "paid"
+    compensated = "compensated"
+    rejected_insufficient_budget = "rejected_insufficient_budget"
+
+
+_TERMINAL_STATES = frozenset(
+    {SagaState.paid, SagaState.compensated, SagaState.rejected_insufficient_budget}
+)
+
+
+class SagaRecord(BaseModel):
+    invoice_id: str
+    correlation_id: str
+    state: SagaState
+    department: str
+    amount_cents: int
+    payment_ref: str | None = None
+    failure_reason: str | None = None
+    updated_at: str
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class PaymentSaga:
+    def __init__(
+        self,
+        budgets: BudgetStore,
+        provider: MockPaymentProvider,
+        store: StateStore,
+        publisher: Publisher,
+    ):
+        self._budgets = budgets
+        self._provider = provider
+        self._store = store
+        self._publisher = publisher
+
+    async def handle(
+        self,
+        invoice_id: str,
+        correlation_id: str,
+        department: str,
+        amount_cents: int,
+        scenario: str,
+        *,
+        auto_route: bool,
+        ceiling_cents: int | None,
+    ) -> SagaRecord:
+        key = f"{_SAGA_KEY_PREFIX}{invoice_id}"
+        value, _ = await self._store.get(key)
+        record = SagaRecord(**value) if value is not None else None
+
+        # Step 1: per-invoice idempotency, THE at-least-once guarantee.
+        if record is not None and record.state in _TERMINAL_STATES:
+            return record
+
+        if record is not None:
+            # Resuming: trust the durable marker's own fields over whatever
+            # this particular call happened to pass, so a retry can never
+            # drift from what was actually reserved/marked.
+            department = record.department
+            amount_cents = record.amount_cents
+            correlation_id = record.correlation_id
+
+        # Step 2 (M12 layer 4): auto-routed amounts get an independent
+        # ceiling re-check. Human-approved amounts skip it by design.
+        if auto_route and ceiling_cents is not None and amount_cents > ceiling_cents:
+            log.critical(
+                "M12 ceiling violation: invoice_id=%s amount_cents=%s ceiling_cents=%s "
+                "-- refusing payment, no funds moved",
+                invoice_id, amount_cents, ceiling_cents,
+            )
+            record = await self._transition(
+                key, invoice_id, correlation_id, department, amount_cents,
+                state=SagaState.compensated, failure_reason=_REASON_CEILING_VIOLATION,
+            )
+            await self._publish_failed(record, compensated=False)
+            return record
+
+        if record is None:
+            record = await self._transition(
+                key, invoice_id, correlation_id, department, amount_cents,
+                state=SagaState.started,
+            )
+
+        # Step 3: started -> reserve budget.
+        if record.state == SagaState.started:
+            reserved_ok = await self._budgets.reserve(department, amount_cents)
+            if not reserved_ok:
+                record = await self._transition(
+                    key, invoice_id, correlation_id, department, amount_cents,
+                    state=SagaState.rejected_insufficient_budget,
+                    failure_reason=_REASON_INSUFFICIENT_BUDGET,
+                )
+                await self._publish_failed(record, compensated=False)
+                return record
+            record = await self._transition(
+                key, invoice_id, correlation_id, department, amount_cents,
+                state=SagaState.reserved,
+            )
+
+        # Step 4: reserved -> execute payment (provider idempotency makes a
+        # crash-resume here safe to retry).
+        if record.state == SagaState.reserved:
+            try:
+                ref = await self._provider.execute(invoice_id, amount_cents, scenario)
+            except PaymentDeclined:
+                # Journey D: reserve -> decline -> release. No orphaned
+                # reservation.
+                await self._budgets.release(department, amount_cents)
+                record = await self._transition(
+                    key, invoice_id, correlation_id, department, amount_cents,
+                    state=SagaState.compensated, failure_reason=_REASON_PAYMENT_DECLINED,
+                )
+                await self._publish_failed(record, compensated=True)
+                return record
+
+            remaining = await self._budgets.get_remaining(department)
+            record = await self._transition(
+                key, invoice_id, correlation_id, department, amount_cents,
+                state=SagaState.paid, payment_ref=ref,
+            )
+            await self._publish_completed(record, remaining)
+            return record
+
+        return record
+
+    async def _transition(
+        self,
+        key: str,
+        invoice_id: str,
+        correlation_id: str,
+        department: str,
+        amount_cents: int,
+        *,
+        state: SagaState,
+        payment_ref: str | None = None,
+        failure_reason: str | None = None,
+    ) -> SagaRecord:
+        def update_fn(value):
+            if value is None:
+                base = {
+                    "invoice_id": invoice_id,
+                    "correlation_id": correlation_id,
+                    "department": department,
+                    "amount_cents": amount_cents,
+                    "payment_ref": None,
+                    "failure_reason": None,
+                }
+            else:
+                base = dict(value)
+            base["state"] = state
+            if payment_ref is not None:
+                base["payment_ref"] = payment_ref
+            if failure_reason is not None:
+                base["failure_reason"] = failure_reason
+            base["updated_at"] = _now()
+            return base
+
+        new_value = await cas_update(self._store, key, update_fn)
+        return SagaRecord(**new_value)
+
+    async def _publish_failed(self, record: SagaRecord, *, compensated: bool) -> None:
+        payload = PaymentFailedPayload(
+            meta=new_event_meta(record.invoice_id, record.correlation_id),
+            reason=record.failure_reason or "",
+            compensated=compensated,
+        )
+        await self._publisher(TOPIC_PAYMENT_FAILED, payload.model_dump())
+
+    async def _publish_completed(self, record: SagaRecord, budget_remaining_cents: int) -> None:
+        payload = PaymentCompletedPayload(
+            meta=new_event_meta(record.invoice_id, record.correlation_id),
+            amount_cents=record.amount_cents,
+            budget_remaining_cents=budget_remaining_cents,
+            department=record.department,
+        )
+        await self._publisher(TOPIC_PAYMENT_COMPLETED, payload.model_dump())
