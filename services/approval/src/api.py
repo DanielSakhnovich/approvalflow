@@ -27,17 +27,25 @@ Two endpoints:
 
   The publish-failure rollback mirrors intake's fail-loud M15. Ordering is
   resolve -> publish -> remove_from_queue (publish-before-dequeue), so a
-  publish failure triggers just a compensating CAS back to pending
-  (resolved_* cleared; the id never left the queue) and the caller sees 503
-  ("verdict accepted but could not be delivered; retry") -- the record is
-  fully re-approvable afterward, by anyone, including a different approver
-  with a different verdict. A resolved-but-unpublished record is exactly
-  the invoice-hangs-forever failure M11 exists to prevent, so if the
-  rollback itself fails, that state is logged CRITICAL (manual
-  reconciliation required) and surfaces as an honest 500 -- never silent.
-  A remove_from_queue failure AFTER a successful publish is benign by
-  construction (stale queue id, reaped by the self-healing view) and only
-  logs a warning; the approver still gets their 200.
+  publish failure triggers a compensating CAS back to pending (resolved_*
+  cleared) and the caller sees 503 ("verdict accepted but could not be
+  delivered; retry") -- the record is fully re-approvable afterward, by
+  anyone, including a different approver with a different verdict. The
+  rollback also re-adds the id to the queue (idempotent): the naive
+  assumption that "the id never left the queue, since publish precedes
+  remove_from_queue" ignores a third actor -- `GET /queue`'s self-healing
+  read can observe the record as resolved (already committed, mid-publish)
+  and remove the id from the index *during* the await, before the publish
+  fails and the rollback runs. Without the re-add, that leaves a record
+  that's `pending` in storage but absent from the queue index: invisible to
+  approvers, forever, since nothing else will ever re-add it. A
+  resolved-but-unpublished record is exactly the invoice-hangs-forever
+  failure M11 exists to prevent, so if the rollback itself fails, that
+  state is logged CRITICAL (manual reconciliation required) and surfaces as
+  an honest 500 -- never silent. A remove_from_queue failure AFTER a
+  successful publish is benign by construction (stale queue id, reaped by
+  the self-healing view) and only logs a warning; the approver still gets
+  their 200.
 """
 
 import logging
@@ -144,6 +152,7 @@ async def submit_verdict(invoice_id: str, body: VerdictRequest,
         verdict=body.verdict,
         approver_id=body.approver_id,
         comment=body.comment,
+        usd_cents=resolved.usd_cents,
     )
     try:
         await publisher(TOPIC_APPROVAL_RESOLVED, payload.model_dump())
@@ -160,10 +169,15 @@ async def submit_verdict(invoice_id: str, body: VerdictRequest,
                 "resolution_comment": "",
             })
 
-        # The id never left the queue (publish precedes remove_from_queue),
-        # so the compensating CAS is the entire rollback -- no re-add needed.
+        # Publish precedes remove_from_queue, but that does NOT guarantee
+        # "the id never left the queue": a concurrent GET /queue can observe
+        # the already-committed resolution mid-publish-await and self-heal
+        # the id out of the index before this rollback runs. So the
+        # compensating CAS is re-add_to_queue -- idempotent, so it's a no-op
+        # in the common case where the id is still there.
         try:
             await repo.resolve(invoice_id, revert)
+            await repo.add_to_queue(invoice_id)
         except Exception:
             log.critical(
                 "rollback FAILED for invoice_id=%s: record is "

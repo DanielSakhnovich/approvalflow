@@ -35,16 +35,30 @@ different event_id) for an invoice that's already escalated, OR the
 redelivery of an event whose first attempt failed *between* `save_new`
 and `add_to_queue` (record durably written, queue write lost). Those two
 cases are indistinguishable at the `save_new` return value, so the
-handler disambiguates on the existing record's status: if it's still
-`pending`, `add_to_queue` is called anyway -- it's idempotent, so the
-legitimate already-queued case is a harmless no-op, while the
-partial-failure case gets the invoice back in front of approvers instead
-of being acked into permanent invisibility. Only a genuinely resolved
-escalation (approved/rejected/needs_info) skips the queue: its human
-review is done and it must not reappear.
+handler disambiguates on the existing record's status:
+
+- `pending`: `add_to_queue` is called anyway -- it's idempotent, so the
+  legitimate already-queued case is a harmless no-op, while the
+  partial-failure case gets the invoice back in front of approvers instead
+  of being acked into permanent invisibility.
+- `needs_info`: NOT terminal. Send-back is designed to loop -- an approver
+  asks for more info, intake resubmits, decision-svc re-evaluates and may
+  route `human_review` again with a fresh event_id. Treating that fresh
+  event as "already exists, ack" would freeze the record in `needs_info`
+  forever (verdict POSTs would 409 against a review that's already done).
+  So this reopens the record: a CAS transform flips it back to `pending`,
+  clears the resolved_* fields, and refreshes the decision fields
+  (usd_cents/route_violations/recommendation/confidence/reasoning/
+  escalated_at) from THIS payload -- then it's re-queued like any other
+  pending escalation. If the CAS loses a race (the record moved off
+  needs_info between the `get` and the transform), the transform raises
+  `AlreadyResolved` and the handler just acks -- nothing to reopen.
+- `approved`/`rejected`: genuinely terminal. Human review is done and it
+  must not reappear, so this acks without queueing.
 """
 
 import logging
+from collections.abc import Callable
 
 from afcommon.contracts import DecisionMadePayload
 from afcommon.dedupe import EventDedupe, bind_event_context, parse_cloudevent
@@ -52,7 +66,7 @@ from afcommon.events import PUBSUB_NAME, TOPIC_DECISION_MADE
 from fastapi import APIRouter, Depends
 
 from .deps import get_dedupe, get_repo
-from .models import Escalation, EscalationStatus
+from .models import AlreadyResolved, Escalation, EscalationStatus
 from .repo import ApprovalRepo
 
 log = logging.getLogger(__name__)
@@ -66,6 +80,33 @@ _ESCALATION_ROUTE = "human_review"
 @router.get("/dapr/subscribe")
 async def subscribe() -> list[dict]:
     return [{"pubsubname": PUBSUB_NAME, "topic": t, "route": f"/events/{t}"} for t in _TOPICS]
+
+
+def _reopen_transform(payload: DecisionMadePayload) -> Callable[[Escalation], Escalation]:
+    """Build the CAS transform that reopens a `needs_info` escalation into a
+    fresh `pending` one, refreshed from `payload` (a new decision-made event
+    for the same invoice, post send-back). Raises `AlreadyResolved` if the
+    record is no longer `needs_info` by the time the transform runs (lost a
+    race to another actor), so `repo.resolve`'s CAS bails instead of
+    clobbering whatever it became."""
+
+    def transform(esc: Escalation) -> Escalation:
+        if esc.status != EscalationStatus.needs_info:
+            raise AlreadyResolved(esc)
+        return esc.model_copy(update={
+            "status": EscalationStatus.pending,
+            "usd_cents": payload.usd_cents,
+            "route_violations": payload.violations,
+            "recommendation": payload.recommendation,
+            "confidence": payload.confidence,
+            "reasoning": payload.reasoning,
+            "escalated_at": payload.meta.occurred_at,
+            "resolved_at": None,
+            "resolved_by": None,
+            "resolution_comment": "",
+        })
+
+    return transform
 
 
 async def _compensate_forget(dedupe: EventDedupe, event_id: str) -> None:
@@ -113,6 +154,21 @@ async def on_decision_made(
                     invoice_id,
                 )
                 await repo.add_to_queue(invoice_id)
+            elif existing is not None and existing.status == EscalationStatus.needs_info:
+                try:
+                    await repo.resolve(invoice_id, _reopen_transform(payload))
+                    await repo.add_to_queue(invoice_id)
+                    log.info(
+                        "reopened needs_info escalation for invoice_id=%s back to "
+                        "pending (refreshed from new decision-made) and re-queued",
+                        invoice_id,
+                    )
+                except AlreadyResolved:
+                    log.info(
+                        "needs_info reopen raced for invoice_id=%s -- record moved "
+                        "on before the CAS applied; acked without queueing",
+                        invoice_id,
+                    )
             else:
                 log.info(
                     "escalation already resolved for invoice_id=%s; acked without queueing",

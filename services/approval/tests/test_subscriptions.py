@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from services.approval.src import deps
 from services.approval.src.main import app
-from services.approval.src.models import EscalationStatus
+from services.approval.src.models import AlreadyResolved, EscalationStatus
 from services.approval.src.repo import ApprovalRepo
 
 
@@ -38,6 +38,24 @@ class _FailOnceThenSucceedRepo(ApprovalRepo):
             self._raised_once = True
             raise RuntimeError("simulated repo failure")
         return await super().save_new(esc)
+
+
+class _ReopenRacesRepo(ApprovalRepo):
+    """`resolve()` raises `AlreadyResolved` on its FIRST call -- simulating
+    the needs_info record moving on (resolved by an approver, or reopened by
+    a concurrent redelivery) between this handler's `get` and its reopen CAS
+    transform actually running. Every call after behaves normally."""
+
+    def __init__(self, store):
+        super().__init__(store)
+        self._raised_once = False
+
+    async def resolve(self, invoice_id, transform):
+        if not self._raised_once:
+            self._raised_once = True
+            existing = await self.get(invoice_id)
+            raise AlreadyResolved(existing)
+        return await super().resolve(invoice_id, transform)
 
 
 class _QueueFailsOnceRepo(ApprovalRepo):
@@ -267,3 +285,96 @@ async def test_resolved_escalation_duplicate_decision_keeps_queue_empty(env):
     assert await repo.list_queue() == []
     stored = await repo.get("inv-7")
     assert stored.status == EscalationStatus.approved
+
+
+async def _noop_publish(topic: str, payload: dict) -> None:
+    return None
+
+
+async def test_needs_info_reopens_to_pending_refreshed_and_requeued(env):
+    """THE GRADED test for the review's C1 finding: escalate -> approver
+    verdict is needs_info -> intake resubmits -> decision-svc re-evaluates
+    and routes human_review again with a FRESH event_id -> the record must
+    come back to pending, REFRESHED from the new payload's decision fields
+    with resolved_* cleared, and be re-queued -- not frozen in needs_info
+    forever (which would 409 every future verdict POST and hang the
+    invoice)."""
+    client, repo, _dedupe = env
+    app.dependency_overrides[deps.get_publisher] = lambda: _noop_publish
+
+    first = decision_payload("inv-8", event_id="evt-8a")
+    resp = client.post("/events/decision-made", json=cloudevent(first))
+    assert resp.status_code == 200
+    assert await repo.list_queue() == ["inv-8"]
+
+    verdict_resp = client.post(
+        "/api/approvals/inv-8/verdict",
+        json={"verdict": "needs_info", "approver_id": "lena", "comment": "need a W9"},
+    )
+    assert verdict_resp.status_code == 200
+    assert verdict_resp.json()["status"] == "needs_info"
+    assert await repo.list_queue() == []
+
+    second_meta = new_event_meta("inv-8", "corr-1").model_copy(update={"event_id": "evt-8b"})
+    second = DecisionMadePayload(
+        meta=second_meta,
+        route="human_review",
+        recommendation="Escalate again",
+        confidence=0.9,
+        violations=["policy_b"],
+        reasoning="Resubmitted with new evidence",
+        usd_cents=60000,
+        ceiling_cents=25000,
+    ).model_dump()
+    resp2 = client.post("/events/decision-made", json=cloudevent(second))
+    assert resp2.status_code == 200
+
+    stored = await repo.get("inv-8")
+    assert stored.status == EscalationStatus.pending
+    assert stored.usd_cents == 60000
+    assert stored.route_violations == ["policy_b"]
+    assert stored.recommendation == "Escalate again"
+    assert stored.confidence == 0.9
+    assert stored.reasoning == "Resubmitted with new evidence"
+    assert stored.resolved_at is None
+    assert stored.resolved_by is None
+    assert stored.resolution_comment == ""
+
+    assert await repo.list_queue() == ["inv-8"]
+
+
+async def test_needs_info_reopen_race_acks_without_crash():
+    """If the needs_info record moves on (e.g. concurrently resolved, or
+    reopened by a racing redelivery) between this handler's `get` and its
+    reopen CAS transform actually running, the transform raises
+    `AlreadyResolved` -- the handler must catch it and ack cleanly, not
+    crash or 500."""
+    store = InMemoryStateStore()
+    dedupe = EventDedupe(store)
+    repo = ApprovalRepo(store)
+    app.dependency_overrides[deps.get_repo] = lambda: repo
+    app.dependency_overrides[deps.get_dedupe] = lambda: dedupe
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        first = decision_payload("inv-9", event_id="evt-9a")
+        resp = client.post("/events/decision-made", json=cloudevent(first))
+        assert resp.status_code == 200
+
+        await repo.resolve(
+            "inv-9",
+            lambda esc: esc.model_copy(update={"status": EscalationStatus.needs_info}),
+        )
+        await repo.remove_from_queue("inv-9")
+
+        racing_repo = _ReopenRacesRepo(store)
+        app.dependency_overrides[deps.get_repo] = lambda: racing_repo
+
+        second = decision_payload("inv-9", event_id="evt-9b")
+        resp2 = client.post("/events/decision-made", json=cloudevent(second))
+        assert resp2.status_code == 200
+
+        assert await repo.list_queue() == []
+        stored = await repo.get("inv-9")
+        assert stored.status == EscalationStatus.needs_info
+    finally:
+        app.dependency_overrides.clear()

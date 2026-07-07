@@ -145,6 +145,9 @@ class TestVerdict:
         assert payload["comment"] == "ok"
         assert payload["meta"]["invoice_id"] == "inv-1"
         assert payload["meta"]["correlation_id"] == "corr-inv-1"
+        # I3: usd_cents rides the approval-resolved event so payment (Phase 05)
+        # can size the budget reservation without re-querying.
+        assert payload["usd_cents"] == 50000
 
     async def test_verdict_needs_info_variant(self, env):
         client, repo, published = env
@@ -248,6 +251,36 @@ class TestPublishFailureRollback:
         await seed(repo, make_escalation("inv-flaky", "2024-01-01T00:00:00+00:00"))
 
         async def flaky_publish(topic: str, payload: dict) -> None:
+            raise RuntimeError("sidecar down")
+
+        app.dependency_overrides[deps.get_publisher] = lambda: flaky_publish
+        resp = client.post("/api/approvals/inv-flaky/verdict",
+                           json={"verdict": "approved", "approver_id": "lena"})
+        assert resp.status_code == 503
+
+        record = await repo.get("inv-flaky")
+        assert record.status == EscalationStatus.pending
+        assert record.resolved_by is None
+        assert record.resolved_at is None
+        assert await repo.list_queue() == ["inv-flaky"]
+
+    async def test_rollback_reraises_id_into_queue_after_self_heal_race(self, env):
+        """THE BINDING test for the review's I2 finding: during the publish
+        await, the record is already committed-resolved, so a concurrent
+        `GET /queue` self-heal can observe it as non-pending and remove the
+        id from the index -- all before the publish actually fails and the
+        rollback runs. The naive rollback (just the compensating CAS back to
+        pending) would leave a record that's pending in storage but ABSENT
+        from the queue index: invisible to approvers forever. The rollback
+        must re-add the id (idempotent) so the invoice reappears."""
+        client, repo, _ = env
+        await seed(repo, make_escalation("inv-flaky", "2024-01-01T00:00:00+00:00"))
+
+        async def flaky_publish(topic: str, payload: dict) -> None:
+            # Simulate the self-healing GET /queue racing in during the
+            # publish await: it observes the (already committed) resolution
+            # and reaps the id from the index before we ever get to roll back.
+            await repo.remove_from_queue("inv-flaky")
             raise RuntimeError("sidecar down")
 
         app.dependency_overrides[deps.get_publisher] = lambda: flaky_publish
