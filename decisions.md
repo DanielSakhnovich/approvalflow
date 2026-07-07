@@ -443,3 +443,33 @@ ownership table, and D-007/D-010).
   implicit in a default rather than enforced by code, a future contributor could add a
   cross-service read/write assuming shared keying works, and only discover the per-appid
   partition at runtime.
+
+---
+
+## D-017 — Persistence split: audit → Postgres; budgets stay on hardened Redis
+
+**Date:** 2026-07-07 · **Status:** Accepted (raised by Daniel 05/07; decided 07/07)
+
+**Decision:** The audit trail (Phase 06) gets its own Dapr state component (`statestore-audit`,
+type `state.postgresql`) backed by a Postgres container. Department budgets (Phase 05) stay on
+the existing Redis state store, hardened now with AOF persistence (`appendonly yes,
+appendfsync everysec`) and a named volume in compose. Budgets-on-Postgres is documented as the
+production path in ARCHITECTURE.md's scaling table.
+
+**Alternatives considered:** both on Postgres · all-Redis with AOF only.
+
+**Advantages of the choice:**
+- Money CAS stays on semantics characterized against the real sidecar (Phase 01 smoke: 409 vs
+  500+user_script signatures) — the INV-1014 no-overspend proof keeps its foundation days before
+  the deadline; a Postgres component reports conflicts differently and would need full
+  re-characterization.
+- Audit gets compliance-grade durability + the polyglot-persistence story (right store per data
+  shape — matches D-005's own rationale for a separate audit service), decided BEFORE audit is
+  built (zero rework).
+- AOF closes Redis's acknowledged-write-loss window cheaply for the demo scope.
+
+**Disadvantages accepted:**
+- One more container (postgres) + component YAML in Phase 06; audit CAS behavior on the postgres
+  component must be characterized by Phase 06's smoke before the trail write path trusts it.
+- Budgets' durability rests on AOF everysec (worst case ~1s of acknowledged writes on a hard
+  crash) — accepted for demo scope, documented for production.
