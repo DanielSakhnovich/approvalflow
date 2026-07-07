@@ -43,6 +43,7 @@ _SAGA_KEY_PREFIX = "saga:"
 _REASON_INSUFFICIENT_BUDGET = "insufficient_budget"
 _REASON_CEILING_VIOLATION = "ceiling-violation"
 _REASON_PAYMENT_DECLINED = "payment_declined"
+_REASON_INVALID_AMOUNT = "invalid_amount"
 
 
 class SagaState(StrEnum):
@@ -113,9 +114,39 @@ class PaymentSaga:
             amount_cents = record.amount_cents
             correlation_id = record.correlation_id
 
+        # Step 1b: poison amount. Guard BEFORE ever claiming/creating a
+        # `started` record -- reserve() would raise ValueError on
+        # amount_cents<=0, which (pre-fix) stranded the saga at `started`
+        # forever (the exception propagates, no marker ever advances, and
+        # every redelivery repeats the crash). Refuse loudly up front instead.
+        if amount_cents <= 0:
+            log.critical(
+                "invalid amount_cents=%s for invoice_id=%s -- refusing payment, "
+                "no funds moved",
+                amount_cents, invoice_id,
+            )
+            record = await self._transition(
+                key, invoice_id, correlation_id, department, amount_cents,
+                state=SagaState.compensated, failure_reason=_REASON_INVALID_AMOUNT,
+            )
+            await self._publish_failed(record, compensated=False)
+            return record
+
         # Step 2 (M12 layer 4): auto-routed amounts get an independent
-        # ceiling re-check. Human-approved amounts skip it by design.
-        if auto_route and ceiling_cents is not None and amount_cents > ceiling_cents:
+        # ceiling re-check. Human-approved amounts skip it by design. Skip
+        # the guard when resuming a saga already past `reserved`: the
+        # reservation already happened, so a later ceiling change (e.g.
+        # auto_route flipped, or a lower ceiling on redelivery) must resume
+        # forward to execute/paid instead of writing `compensated` without
+        # releasing the reservation first (that would strand a live
+        # reservation with no compensating release -- an orphaned decrement).
+        already_reserved = record is not None and record.state == SagaState.reserved
+        if (
+            auto_route
+            and ceiling_cents is not None
+            and amount_cents > ceiling_cents
+            and not already_reserved
+        ):
             log.critical(
                 "M12 ceiling violation: invoice_id=%s amount_cents=%s ceiling_cents=%s "
                 "-- refusing payment, no funds moved",
@@ -134,9 +165,11 @@ class PaymentSaga:
                 state=SagaState.started,
             )
 
-        # Step 3: started -> reserve budget.
+        # Step 3: started -> reserve budget. reserve_once is idempotent per
+        # invoice_id: any number of concurrent/resumed callers for this
+        # invoice decrement the budget at most once (Finding 1).
         if record.state == SagaState.started:
-            reserved_ok = await self._budgets.reserve(department, amount_cents)
+            reserved_ok = await self._budgets.reserve_once(department, amount_cents, invoice_id)
             if not reserved_ok:
                 record = await self._transition(
                     key, invoice_id, correlation_id, department, amount_cents,
@@ -157,8 +190,10 @@ class PaymentSaga:
                 ref = await self._provider.execute(invoice_id, amount_cents, scenario)
             except PaymentDeclined:
                 # Journey D: reserve -> decline -> release. No orphaned
-                # reservation.
+                # reservation. Also clear the reserve_once claim record so a
+                # released invoice's reservation slot doesn't linger.
                 await self._budgets.release(department, amount_cents)
+                await self._budgets.clear_reservation(invoice_id)
                 record = await self._transition(
                     key, invoice_id, correlation_id, department, amount_cents,
                     state=SagaState.compensated, failure_reason=_REASON_PAYMENT_DECLINED,
