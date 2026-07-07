@@ -13,6 +13,20 @@ contexts. Once a saga reaches a terminal state (paid, compensated,
 rejected_insufficient_budget) it is returned unchanged -- no re-reserve, no
 re-execute, no re-publish.
 
+Per-invoice idempotency is guaranteed for SEQUENTIAL redelivery (the Dapr
+default) via that terminal-state check above -- a resumed/retried call for
+an invoice_id that already reached a terminal marker is a no-op. Truly
+CONCURRENT delivery of the same invoice_id (two handle() calls in flight at
+once, e.g. under visibility-timeout overlap) is a different story: both
+could observe the record before either writes `started`/`reserved`, and both
+would then call reserve(), double-decrementing the budget. This is outside
+the delivery model this saga is built against (at-least-once, sequential
+per key), is bounded by the provider's own first-write payment idempotency
+(at most one real payment ever executes), and would be closed by a
+per-invoice reservation record if concurrent delivery for the same
+invoice_id is ever enabled. Reviewed and accepted (Opus review, Phase 05
+T3).
+
 M12 layer 4 (defense-in-depth): even though decision-svc and approval-svc
 already gate the ceiling, payment re-checks it independently for auto-routed
 amounts. If it's ever violated here, BOTH services would have to be wrong
@@ -165,11 +179,13 @@ class PaymentSaga:
                 state=SagaState.started,
             )
 
-        # Step 3: started -> reserve budget. reserve_once is idempotent per
-        # invoice_id: any number of concurrent/resumed callers for this
-        # invoice decrement the budget at most once (Finding 1).
+        # Step 3: started -> reserve budget. Idempotent for SEQUENTIAL
+        # redelivery only (the terminal-state check in Step 1 covers that
+        # case); truly concurrent same-invoice delivery could still call
+        # reserve() twice -- see module docstring for why that residual is
+        # accepted rather than closed with a reservation record.
         if record.state == SagaState.started:
-            reserved_ok = await self._budgets.reserve_once(department, amount_cents, invoice_id)
+            reserved_ok = await self._budgets.reserve(department, amount_cents)
             if not reserved_ok:
                 record = await self._transition(
                     key, invoice_id, correlation_id, department, amount_cents,
@@ -190,10 +206,8 @@ class PaymentSaga:
                 ref = await self._provider.execute(invoice_id, amount_cents, scenario)
             except PaymentDeclined:
                 # Journey D: reserve -> decline -> release. No orphaned
-                # reservation. Also clear the reserve_once claim record so a
-                # released invoice's reservation slot doesn't linger.
+                # reservation.
                 await self._budgets.release(department, amount_cents)
-                await self._budgets.clear_reservation(invoice_id)
                 record = await self._transition(
                     key, invoice_id, correlation_id, department, amount_cents,
                     state=SagaState.compensated, failure_reason=_REASON_PAYMENT_DECLINED,

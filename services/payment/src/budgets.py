@@ -4,31 +4,16 @@ BudgetStore seeds per-department budgets from sample-invoices.json and
 protects every debit/credit with a compare-and-swap loop against the
 StateStore's etag, so concurrent reserve() calls against the same
 department can never both succeed against a budget that can't cover both.
-
-reserve_once() closes a second race that plain reserve() cannot: two
-truly-concurrent callers for the SAME invoice_id (e.g. two live saga
-handlers racing on one invoice, or a resumed/redelivered handler racing a
-still-in-flight one) would each pass reserve()'s own CAS guard and each
-decrement the budget -- CAS only prevents overspend *within* a single
-reserve() call, it says nothing about calling reserve() twice for what is
-logically one payment. `reservation:{invoice_id}` is a first-write claim,
-mirroring the provider's idempotency record: the FIRST caller to claim it
-performs the actual reserve() and caches the outcome; every other caller
-for that invoice_id polls until the claim-holder finishes and returns the
-SAME cached outcome, never calling reserve() itself.
 """
 
-import asyncio
 import json
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from afcommon.state import CasConflict, StateStore, cas_update, try_register
+from afcommon.state import CasConflict, StateStore, try_register
 
 _BUDGET_KEY_PREFIX = "budget:"
-_RESERVATION_KEY_PREFIX = "reservation:"
 _MAX_RETRIES = 10
-_RESERVE_ONCE_MAX_POLLS = 200
 
 
 def _find_repo_file(name: str) -> Path:
@@ -102,44 +87,6 @@ class BudgetStore:
                 return
         raise CasConflict(f"CAS on '{key}' failed after {_MAX_RETRIES} retries")
 
-    async def reserve_once(self, dept: str, amount_cents: int, invoice_id: str) -> bool:
-        """Per-invoice idempotent reserve: at most one real decrement ever
-        happens for a given invoice_id, no matter how many concurrent or
-        resumed callers ask for it.
-
-        The first caller to claim `reservation:{invoice_id}` (first-write
-        via try_register) is the ONLY one that ever calls reserve() -- every
-        other caller sees the claim already taken and polls the reservation
-        record until the claim-holder finishes, then returns that cached
-        True/False outcome. This mirrors MockPaymentProvider's idempotency
-        record, but for the budget decrement rather than the provider call.
-        """
-        key = _reservation_key(invoice_id)
-        for _ in range(_RESERVE_ONCE_MAX_POLLS):
-            existing, _ = await self._store.get(key)
-            if existing is not None:
-                if existing.get("pending"):
-                    await asyncio.sleep(0)
-                    continue
-                return existing["ok"]
-            if await try_register(self._store, key, {"pending": True}):
-                ok = await self.reserve(dept, amount_cents)
-                await cas_update(self._store, key, lambda _v, ok=ok: {"pending": False, "ok": ok})
-                return ok
-            # Lost the claim race to a concurrent caller that got there just
-            # after our get() saw nothing; loop back and observe its outcome.
-        raise CasConflict(f"reserve_once polling exhausted for invoice_id={invoice_id}")
-
-    async def clear_reservation(self, invoice_id: str) -> None:
-        """Delete the reservation:{invoice_id} record. Called after a
-        compensating release() so a released invoice's reservation slot
-        doesn't linger -- harmless no-op if no reservation was ever made."""
-        await self._store.delete(_reservation_key(invoice_id))
-
 
 def _key(dept: str) -> str:
     return f"{_BUDGET_KEY_PREFIX}{dept}"
-
-
-def _reservation_key(invoice_id: str) -> str:
-    return f"{_RESERVATION_KEY_PREFIX}{invoice_id}"

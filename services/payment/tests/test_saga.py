@@ -7,11 +7,10 @@ distinct redelivery (fresh event/correlation ids) of the same invoice --
 approval-resolved is at-least-once per invoice, not per event_id.
 """
 
-import asyncio
 import logging
 
 import pytest
-from afcommon.state import InMemoryStateStore, YieldingStateStore
+from afcommon.state import InMemoryStateStore
 
 from services.payment.src.budgets import BudgetStore
 from services.payment.src.provider import MockPaymentProvider
@@ -339,42 +338,6 @@ async def test_any_terminal_state_short_circuits_untouched(terminal_state):
     assert budgets.reserve_calls == 0
     assert provider.execute_calls == 0
     assert publisher.events == []
-
-
-async def test_concurrent_handle_same_invoice_decrements_budget_exactly_once():
-    """Finding 1: two TRULY concurrent handle() calls for the same invoice_id
-    (both starting from no existing saga record, on a genuinely-suspending
-    store) must decrement the budget EXACTLY ONCE -- reserve_once's
-    per-invoice idempotency closes the race that a plain reserve() call in
-    the saga would lose (both callers would pass the load-time terminal
-    check and both reserve()).
-
-    The event stream is NOT required to collapse to one raw message here --
-    this system's own docs treat downstream delivery as at-least-once per
-    invoice (see saga.py's module docstring), so both racing calls may each
-    independently reach `paid` and publish. Dedupe by invoice_id/payment_ref
-    to check the *logical* payment is single, and assert the budget --
-    the actual money -- moved exactly once.
-    """
-    raw_store = YieldingStateStore()
-    saga, budgets, provider, publisher, _ = await _make_saga(raw_store=raw_store)
-    before = await budgets.get_remaining(_DEPT)
-
-    results = await asyncio.gather(
-        saga.handle("inv-11", "corr-a", _DEPT, 40000, "", auto_route=True, ceiling_cents=None),
-        saga.handle("inv-11", "corr-b", _DEPT, 40000, "", auto_route=True, ceiling_cents=None),
-    )
-
-    # THE money invariant: exactly one decrement, no matter how the race falls.
-    assert await budgets.get_remaining(_DEPT) == before - 40000
-
-    assert all(r.state == SagaState.paid for r in results)
-    distinct_refs = {r.payment_ref for r in results}
-    assert len(distinct_refs) == 1  # same underlying payment, provider-idempotent
-
-    completed = [p for topic, p in publisher.events if topic == "payment-completed"]
-    distinct_payments = {(p["meta"]["invoice_id"], p["amount_cents"]) for p in completed}
-    assert distinct_payments == {("inv-11", 40000)}  # dedupe by invoice: one logical payment
 
 
 async def test_ceiling_guard_skipped_on_reserved_resume_no_orphaned_reservation():
