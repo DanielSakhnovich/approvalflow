@@ -185,5 +185,92 @@ echo "=== curl http://localhost:8002/api/config/thresholds ==="
 curl -sf http://localhost:8002/api/config/thresholds | grep -q 25000 \
   || { echo "FAIL: thresholds endpoint missing expected ceiling_cents"; exit 1; }
 
+echo "=== waiting for approval-svc to become healthy ==="
+for i in $(seq 1 30); do
+  status="$(docker compose ps approval-svc --format '{{.Health}}' 2>/dev/null || true)"
+  if [ "$status" = "healthy" ]; then
+    echo "approval-svc is healthy (after ${i}x2s)"
+    break
+  fi
+  sleep 2
+done
+
+echo "--- approval E2E: escalate -> RESTART -> resume (M11 / journey B) ---"
+ESC_PAYLOAD=$(python3 - <<'EOF'
+import json
+data = json.load(open("sample-invoices.json"))
+inv = next(f for f in data["fixtures"] if f["id"] == "INV-1003")
+inv = {k: v for k, v in inv.items() if k not in ("expected", "scenario")}
+print(json.dumps(inv))
+EOF
+)
+TRACK3=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+  -d "$ESC_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
+for i in $(seq 1 30); do
+  S3=$(curl -sf "http://localhost:8001/api/invoices/$TRACK3" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$S3" = "pending_approval" ] && break; sleep 1
+done
+[ "$S3" = "pending_approval" ] || { echo "FAIL: expected pending_approval, got $S3"; exit 1; }
+curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" || { echo "FAIL: not in queue"; exit 1; }
+
+echo "--- restarting approval-svc (the M11 moment) ---"
+# `docker compose restart approval-svc approval-svc-dapr` as a single command
+# fires kill/stop/start for both containers concurrently (confirmed via
+# `docker events`: both timestamps identical to the second). The sidecar
+# (network_mode: "service:approval-svc") re-attaches to whatever network
+# namespace approval-svc has AT THE MOMENT the sidecar container itself
+# restarts -- and since daprd's own restart is much faster than the
+# Python/uvicorn app's, the sidecar reliably finishes (and re-joins the
+# namespace) *before* approval-svc has torn down and recreated its own
+# namespace, permanently orphaning the sidecar (httpx.ConnectError inside
+# the app forever after -- not a transient race that more waiting fixes).
+# Independently reproduced during review (2026-07-07): after the joint
+# restart, daprd logged a clean startup (placement connected) yet
+# localhost:3500 stayed connection-refused from inside the app container
+# 45+ seconds later -- daprd's sockets live in the app's dead pre-restart
+# namespace. Restarting approval-svc, waiting for it to
+# be healthy again, and only then restarting its sidecar is the same real
+# restart (both containers really do restart) made deterministic instead of
+# racy; this is not a sleep-based workaround for a flaky assertion, it's
+# sequencing around a genuine docker network_mode:"service:X" hazard shared
+# by every service in this compose file.
+#
+# `docker compose ps --format Health` can still read the PRE-restart
+# "healthy" status for an instant right after `restart` is issued (the
+# container's health state hasn't flipped away from healthy yet), so a
+# naive "wait until healthy" loop can false-positive on stale state and
+# return immediately -- observed directly: t=1 poll after issuing restart
+# still reported "healthy" before dropping to "starting". Waiting for the
+# status to first LEAVE healthy, then waiting for it to become healthy
+# again, closes that window.
+docker compose restart approval-svc
+for i in $(seq 1 30); do
+  status="$(docker compose ps approval-svc --format '{{.Health}}' 2>/dev/null || true)"
+  [ "$status" != "healthy" ] && break
+  sleep 0.5
+done
+for i in $(seq 1 30); do
+  status="$(docker compose ps approval-svc --format '{{.Health}}' 2>/dev/null || true)"
+  [ "$status" = "healthy" ] && break
+  sleep 1
+done
+docker compose restart approval-svc-dapr
+for i in $(seq 1 30); do
+  curl -sf http://localhost:8003/healthz >/dev/null 2>&1 && break; sleep 1
+done
+curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" \
+  || { echo "FAIL: queue lost across restart — M11 broken"; exit 1; }
+
+curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK3/verdict" \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"client name confirmed offline"}' >/dev/null \
+  || { echo "FAIL: verdict rejected"; exit 1; }
+for i in $(seq 1 30); do
+  S3=$(curl -sf "http://localhost:8001/api/invoices/$TRACK3" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$S3" = "approved" ] && break; sleep 1
+done
+[ "$S3" = "approved" ] || { echo "FAIL: resume did not reach intake, got $S3"; exit 1; }
+echo "APPROVAL E2E (M11 restart survived): OK"
+
 echo "=== docker compose down ==="
 docker compose down

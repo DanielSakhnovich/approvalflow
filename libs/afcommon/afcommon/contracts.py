@@ -25,10 +25,18 @@ class DecisionMadePayload(BaseModel):
 
 
 class ApprovalResolvedPayload(BaseModel):
+    """AT-LEAST-ONCE per invoice, fresh event_id per attempt (approval's
+    publish-failure rollback + retry): consumers must be idempotent per
+    invoice_id, not per event_id."""
+
     meta: EventMeta
     verdict: Verdict
     approver_id: str
     comment: str = ""
+    # Amount in integer cents, carried so payment (Phase 05) can size the
+    # budget reservation without re-querying. Defaults to 0 so existing
+    # fixtures/tests that don't set it keep passing.
+    usd_cents: int = 0
 
 
 class PaymentCompletedPayload(BaseModel):

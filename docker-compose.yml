@@ -82,3 +82,38 @@ services:
     depends_on:
       decision-svc:
         condition: service_healthy
+
+  approval-svc:
+    build:
+      context: .
+      dockerfile: services/approval/Dockerfile
+    ports:
+      - "8003:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  approval-svc-dapr:
+    image: daprio/daprd:1.15.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "approval-svc",
+        "--app-port", "8000",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components",
+        "--placement-host-address", "placement:50006",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+      - ./dapr/secrets.json:/dapr/secrets.json:ro
+    network_mode: "service:approval-svc"
+    depends_on:
+      approval-svc:
+        condition: service_healthy

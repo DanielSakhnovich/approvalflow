@@ -64,6 +64,22 @@ curl -X PUT http://localhost:8002/api/config/thresholds \
 
 Within seconds after submitting an invoice, the decision service routes it: `approved` (auto-approved) or `pending_approval` (escalated). A resubmission of the same payload routes `duplicate`.
 
+#### Approval service
+
+View escalation queue (port 8003):
+```
+curl http://localhost:8003/api/approvals/queue
+```
+
+Submit approval verdict:
+```
+curl -X POST http://localhost:8003/api/approvals/<trackingId>/verdict \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict":"approved","approver_id":"you@example.com","comment":"ok"}'
+```
+
+Escalated invoices (e.g., client dinners over $500 without a client name) pause in the queue durably — the compose smoke proves the pause survives a service restart (requirement M11, journey B).
+
 ## Test
 
 ```
