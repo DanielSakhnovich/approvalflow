@@ -36,6 +36,12 @@ class Escalation(BaseModel):
     submitter: str = ""
     vendor: str = ""
     category: str = ""
+    # Harness marker for fixture-driven failure injection (Phase 05's payment
+    # provider gate), carried through from the decision-made payload.
+    scenario: str = ""
+    # Budget owner for payment (Phase 05), carried through from the
+    # decision-made payload.
+    department: str = ""
     escalated_at: str
     resolved_at: str | None = None
     resolved_by: str | None = None
@@ -50,7 +56,9 @@ class Escalation(BaseModel):
         The decision-made payload carries no submission context, so vendor/submitter/
         category default to empty strings. Passing the original invoice dict (fixture
         shape) enriches those three display fields; no caller does so yet — the wire
-        payload is all Phase 04 has.
+        payload is all Phase 04 has. `scenario`/`department`, in contrast, ride the
+        wire payload itself (populated by decision-svc's pipeline from the invoice),
+        so they're mapped straight from `payload`, not from the optional `invoice` arg.
         """
         invoice = invoice or {}
         return cls(
@@ -65,5 +73,7 @@ class Escalation(BaseModel):
             submitter=str(invoice.get("submitter", "") or ""),
             vendor=str(invoice.get("vendor", "") or ""),
             category=str(invoice.get("category", "") or ""),
+            scenario=payload.scenario,
+            department=payload.department,
             escalated_at=payload.meta.occurred_at,
         )

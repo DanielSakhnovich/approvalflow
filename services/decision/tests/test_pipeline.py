@@ -111,6 +111,29 @@ async def test_inv1001_auto_approves_and_publishes_decision_made_once():
     # Fresh event id, but same invoice/correlation ids as the submission.
     assert published["meta"]["invoice_id"] == invoice["id"]
     assert published["meta"]["correlation_id"] == "corr-1"
+    # INV-1001 has no `scenario` in the fixture and a real department: the
+    # marker stays empty (production-shaped invoice) while department rides
+    # through for payment (Phase 05) to size its reservation against.
+    assert published["scenario"] == ""
+    assert published["department"] == "engineering-2026Q2"
+
+
+async def test_inv1012_carries_scenario_and_department_through_to_decision_made():
+    """INV-1012 is the fixture with a `scenario` marker
+    (payment-failure:journey-D), used by Phase 05's provider gate for
+    fixture-driven failure injection. Both scenario and department must
+    ride the published DecisionMadePayload unchanged from the invoice."""
+    pipeline, _trust, publisher, _store = _make_pipeline(StubAgent())
+    invoice = _fixture("INV-1012")
+
+    result = await pipeline.handle_submission(_submission(invoice))
+
+    assert result.route == "human_review"
+    assert result.scenario == "payment-failure:journey-D"
+    assert result.department == "engineering-2026Q2"
+    _topic, published = publisher.calls[0]
+    assert published["scenario"] == "payment-failure:journey-D"
+    assert published["department"] == "engineering-2026Q2"
 
 
 async def test_duplicate_is_routed_without_ever_calling_the_agent():

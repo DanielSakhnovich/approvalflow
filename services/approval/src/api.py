@@ -153,6 +153,8 @@ async def submit_verdict(invoice_id: str, body: VerdictRequest,
         approver_id=body.approver_id,
         comment=body.comment,
         usd_cents=resolved.usd_cents,
+        scenario=resolved.scenario,
+        department=resolved.department,
     )
     try:
         await publisher(TOPIC_APPROVAL_RESOLVED, payload.model_dump())

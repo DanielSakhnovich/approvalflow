@@ -22,6 +22,13 @@ class DecisionMadePayload(BaseModel):
     reasoning: str
     usd_cents: int
     ceiling_cents: int
+    # Harness marker for fixture-driven failure injection (e.g. Phase 05's
+    # payment provider gate). Production payloads never set it; defaults to
+    # "" so existing fixtures/tests that don't set it keep passing.
+    scenario: str = ""
+    # Budget owner for payment (Phase 05) to size/target its reservation
+    # against. Defaults to "" so existing fixtures/tests keep passing.
+    department: str = ""
 
 
 class ApprovalResolvedPayload(BaseModel):
@@ -37,6 +44,13 @@ class ApprovalResolvedPayload(BaseModel):
     # budget reservation without re-querying. Defaults to 0 so existing
     # fixtures/tests that don't set it keep passing.
     usd_cents: int = 0
+    # Harness marker for fixture-driven failure injection (e.g. Phase 05's
+    # payment provider gate). Production payloads never set it; defaults to
+    # "" so existing fixtures/tests that don't set it keep passing.
+    scenario: str = ""
+    # Budget owner for payment (Phase 05) to size/target its reservation
+    # against. Defaults to "" so existing fixtures/tests keep passing.
+    department: str = ""
 
 
 class PaymentCompletedPayload(BaseModel):

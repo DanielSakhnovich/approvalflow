@@ -35,6 +35,8 @@ def decision_payload(event_meta):
         reasoning="High value and policy violation",
         usd_cents=50000,
         ceiling_cents=100000,
+        scenario="payment-failure:journey-D",
+        department="engineering-2026Q2",
     )
 
 
@@ -233,6 +235,10 @@ class TestFromDecision:
         assert esc.resolved_at is None and esc.resolved_by is None
         # escalated_at comes from the event meta: ISO 8601 with UTC offset
         assert esc.escalated_at.endswith("+00:00")
+        # scenario/department ride the wire payload itself (Phase 05), not
+        # the optional invoice-enrichment arg.
+        assert esc.scenario == "payment-failure:journey-D"
+        assert esc.department == "engineering-2026Q2"
 
     def test_display_fields_empty_without_invoice(self, decision_payload):
         esc = Escalation.from_decision(decision_payload)
