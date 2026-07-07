@@ -2,14 +2,11 @@ from contextlib import asynccontextmanager
 
 from afcommon.logging import setup_json_logging
 from afcommon.middleware import CorrelationIdMiddleware
-from afcommon.state import DaprStateStore
 from fastapi import FastAPI
 
-from .budgets import BudgetStore
+from .deps import get_budget_store
 
 setup_json_logging("payment-svc")
-
-_budget_store = BudgetStore(DaprStateStore())
 
 
 @asynccontextmanager
@@ -18,7 +15,7 @@ async def lifespan(app: FastAPI):
     # before the first reserve(), in case tests/callers hit the store
     # without ever running this startup hook (e.g. bare TestClient(app)
     # never triggers ASGI lifespan events).
-    await _budget_store.seed_if_absent()
+    await get_budget_store().seed_if_absent()
     yield
 
 

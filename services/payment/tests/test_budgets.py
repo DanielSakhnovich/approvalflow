@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from afcommon.state import InMemoryStateStore, YieldingStateStore
 
 from services.payment.src.budgets import BudgetStore, to_cents
@@ -93,6 +94,42 @@ async def test_concurrent_reserves_exactly_one_succeeds_no_overspend():
     remaining = await store.get_remaining(_MARKETING)
     assert remaining == 40000
     assert remaining >= 0
+
+
+async def test_reserve_zero_amount_raises_and_budget_unchanged():
+    store = BudgetStore(InMemoryStateStore())
+    await store.seed_if_absent()
+    before = await store.get_remaining(_MARKETING)
+    with pytest.raises(ValueError):
+        await store.reserve(_MARKETING, 0)
+    assert await store.get_remaining(_MARKETING) == before
+
+
+async def test_reserve_negative_amount_raises_and_budget_unchanged():
+    store = BudgetStore(InMemoryStateStore())
+    await store.seed_if_absent()
+    before = await store.get_remaining(_MARKETING)
+    with pytest.raises(ValueError):
+        await store.reserve(_MARKETING, -100)
+    assert await store.get_remaining(_MARKETING) == before
+
+
+async def test_release_zero_amount_raises_and_budget_unchanged():
+    store = BudgetStore(InMemoryStateStore())
+    await store.seed_if_absent()
+    before = await store.get_remaining(_MARKETING)
+    with pytest.raises(ValueError):
+        await store.release(_MARKETING, 0)
+    assert await store.get_remaining(_MARKETING) == before
+
+
+async def test_release_negative_amount_raises_and_budget_unchanged():
+    store = BudgetStore(InMemoryStateStore())
+    await store.seed_if_absent()
+    before = await store.get_remaining(_MARKETING)
+    with pytest.raises(ValueError):
+        await store.release(_MARKETING, -100)
+    assert await store.get_remaining(_MARKETING) == before
 
 
 def test_to_cents_converts_dollars_to_cents():

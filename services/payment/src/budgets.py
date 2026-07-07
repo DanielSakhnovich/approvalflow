@@ -54,6 +54,8 @@ class BudgetStore:
         """CAS loop: succeeds and decrements iff remaining >= amount_cents.
         Returns False (budget unchanged) if insufficient or dept unknown.
         Raises CasConflict if retries are exhausted under contention."""
+        if amount_cents <= 0:
+            raise ValueError(f"amount_cents must be positive, got {amount_cents}")
         await self.seed_if_absent()
         key = _key(dept)
         for _ in range(_MAX_RETRIES):
@@ -64,13 +66,16 @@ class BudgetStore:
             if remaining < amount_cents:
                 return False
             new_remaining = remaining - amount_cents
-            assert new_remaining >= 0, "budget invariant violated: negative remaining"
+            if new_remaining < 0:
+                raise ValueError(f"budget {dept} would go negative")
             if await self._store.try_save(key, {"remaining_cents": new_remaining}, etag):
                 return True
         raise CasConflict(f"CAS on '{key}' failed after {_MAX_RETRIES} retries")
 
     async def release(self, dept: str, amount_cents: int) -> None:
         """CAS add-back. Unknown department: no-op, never crashes."""
+        if amount_cents <= 0:
+            raise ValueError(f"amount_cents must be positive, got {amount_cents}")
         await self.seed_if_absent()
         key = _key(dept)
         for _ in range(_MAX_RETRIES):
@@ -78,7 +83,6 @@ class BudgetStore:
             if value is None:
                 return
             new_remaining = value["remaining_cents"] + amount_cents
-            assert new_remaining >= 0, "budget invariant violated: negative remaining"
             if await self._store.try_save(key, {"remaining_cents": new_remaining}, etag):
                 return
         raise CasConflict(f"CAS on '{key}' failed after {_MAX_RETRIES} retries")
