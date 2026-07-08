@@ -80,6 +80,15 @@ curl -X POST http://localhost:8003/api/approvals/<trackingId>/verdict \
 
 Escalated invoices (e.g., client dinners over $500 without a client name) pause in the queue durably — the compose smoke proves the pause survives a service restart (requirement M11, journey B).
 
+#### Payment service
+
+Check remaining budget (port 8004):
+```
+curl http://localhost:8004/api/budgets/engineering-2026Q2
+```
+
+Approved invoices flow to the payment saga which reserves department budget, pays (via mock provider), and compensates on failure. The compose smoke proves journey A (auto-approve → paid), journey D (INV-1012 injected failure → budget reservation released, no orphan), and INV-1014A/B (two $600 claims against a $1000 budget → exactly one pays, no overspend).
+
 ## Test
 
 ```
