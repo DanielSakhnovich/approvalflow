@@ -96,15 +96,21 @@ class TestQueueView:
         assert first["escalatedAt"] == "2024-01-01T00:00:00+00:00"
         assert first["status"] == "pending"
 
-    async def test_queue_self_heals_missing_ids(self, env):
+    async def test_queue_skips_but_does_not_evict_unreadable_ids(self, env):
+        # A record that reads as None is AMBIGUOUS under eventual consistency
+        # (transient read-after-write miss vs genuinely gone). It must be
+        # skipped from the view but NOT evicted from the index — evicting on a
+        # transient blip would permanently strand a pending escalation (a real
+        # bug the Phase 05 payment smoke surfaced: a legitimately-pending
+        # escalation vanished from the queue after a transient 204 read).
         client, repo, _ = env
-        await repo.add_to_queue("inv-ghost")  # index entry, no backing record
+        await repo.add_to_queue("inv-ghost")  # index entry, momentarily no readable record
         await seed(repo, make_escalation("inv-real", "2024-01-01T00:00:00+00:00"))
 
         resp = client.get("/api/approvals/queue")
         items = resp.json()["items"]
-        assert [i["invoiceId"] for i in items] == ["inv-real"]
-        assert await repo.list_queue() == ["inv-real"]
+        assert [i["invoiceId"] for i in items] == ["inv-real"]  # ghost skipped from view
+        assert set(await repo.list_queue()) == {"inv-ghost", "inv-real"}  # but NOT evicted
 
     async def test_queue_self_heals_non_pending_ids(self, env):
         client, repo, _ = env
