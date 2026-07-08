@@ -4,7 +4,9 @@ from afcommon.logging import setup_json_logging
 from afcommon.middleware import CorrelationIdMiddleware
 from fastapi import FastAPI
 
+from .api import router as api_router
 from .deps import get_budget_store
+from .subscriptions import router as subscriptions_router
 
 setup_json_logging("payment-svc")
 
@@ -26,3 +28,7 @@ app.add_middleware(CorrelationIdMiddleware)
 @app.get("/healthz")
 async def healthz() -> dict:
     return {"status": "ok", "service": "payment-svc"}
+
+
+app.include_router(api_router)
+app.include_router(subscriptions_router)
