@@ -13,19 +13,34 @@ contexts. Once a saga reaches a terminal state (paid, compensated,
 rejected_insufficient_budget) it is returned unchanged -- no re-reserve, no
 re-execute, no re-publish.
 
-Per-invoice idempotency is guaranteed for SEQUENTIAL redelivery (the Dapr
-default) via that terminal-state check above -- a resumed/retried call for
-an invoice_id that already reached a terminal marker is a no-op. Truly
-CONCURRENT delivery of the same invoice_id (two handle() calls in flight at
-once, e.g. under visibility-timeout overlap) is a different story: both
-could observe the record before either writes `started`/`reserved`, and both
-would then call reserve(), double-decrementing the budget. This is outside
-the delivery model this saga is built against (at-least-once, sequential
-per key), is bounded by the provider's own first-write payment idempotency
-(at most one real payment ever executes), and would be closed by a
-per-invoice reservation record if concurrent delivery for the same
-invoice_id is ever enabled. Reviewed and accepted (Opus review, Phase 05
-T3).
+Idempotency for SEQUENTIAL redelivery of an ALREADY-TERMINAL invoice is
+guaranteed by the terminal-state check above -- a resumed/retried call for
+an invoice_id that already reached a terminal marker (paid/compensated/
+rejected) is a no-op: no re-reserve, no re-execute, no re-publish.
+
+Two crash/concurrency windows are KNOWN, ACCEPTED residuals -- both bounded
+by the provider's first-write payment idempotency (at most one real payment
+ever executes) and both failing in the SAFE direction (budget under-credit,
+never overspend, never double-pay). Reviewed and accepted (Opus reviews,
+Phase 05 T3 + final):
+
+  (a) SEQUENTIAL crash between reserve() committing and the `reserved`
+      marker being written. The saga is durably at `started` with the budget
+      already decremented; on redelivery `started` re-runs reserve() and
+      decrements a SECOND time. Net: budget decremented twice, paid once.
+      reserve() and the step marker are two non-atomic writes to different
+      keys, so this window is inherent without a per-invoice reservation
+      record (deliberately NOT reintroduced -- an earlier attempt at one
+      introduced a worse release-double-credit bug and was reverted).
+
+  (b) TRULY CONCURRENT delivery of the same invoice_id (two handle() calls
+      in flight, e.g. visibility-timeout overlap): both observe a non-terminal
+      record and both call reserve(). Outside the at-least-once, sequential-
+      per-key delivery model this saga targets.
+
+Both would be closed by an idempotent per-invoice reservation record; the
+trade-off (that mechanism's own failure modes vs. a bounded, safe-direction
+budget erosion) was weighed and the residual accepted for this scope.
 
 M12 layer 4 (defense-in-depth): even though decision-svc and approval-svc
 already gate the ceiling, payment re-checks it independently for auto-routed
