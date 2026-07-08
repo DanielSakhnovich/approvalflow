@@ -139,6 +139,8 @@ class DecisionPipeline:
             reasoning=decision.reasoning,
             usd_cents=validation.usd_cents,
             ceiling_cents=decision.effective_ceiling_cents,
+            scenario=invoice.get("scenario", "") or "",
+            department=invoice.get("department", "") or "",
         )
         await self._publisher(TOPIC_DECISION_MADE, result.model_dump())
         return result

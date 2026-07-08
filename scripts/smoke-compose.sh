@@ -30,6 +30,25 @@ echo "=== curl http://localhost:8001/healthz ==="
 curl -sf http://localhost:8001/healthz
 echo
 
+# Wait for payment-svc (and give its daprd sidecar a chance to register its
+# /dapr/subscribe topics) BEFORE any invoice is submitted below. Dapr's redis
+# pubsub component creates each app's consumer group at subscribe time; a
+# consumer group created AFTER a message was published does not see that
+# message (this is a cold run -- `docker compose down -v` wiped any prior
+# groups). Blocking here, before INV-1001 is ever submitted, guarantees
+# payment-svc is already subscribed by the time decision-svc later publishes
+# decision-made for it -- the same ordering hazard that would otherwise
+# silently strand journey A short of `paid`.
+echo "=== waiting for payment-svc to become healthy ==="
+for i in $(seq 1 30); do
+  status="$(docker compose ps payment-svc --format '{{.Health}}' 2>/dev/null || true)"
+  if [ "$status" = "healthy" ]; then
+    echo "payment-svc is healthy (after ${i}x2s)"
+    break
+  fi
+  sleep 2
+done
+
 echo "=== intake-api-dapr placement log lines ==="
 docker compose logs intake-api-dapr | grep -i "placement" | head -3
 
@@ -157,13 +176,18 @@ for i in $(seq 1 30); do
 done
 
 echo "--- decision E2E (auto-approve through two services) ---"
+# With payment-svc running, an auto_approve invoice does not rest at `approved`:
+# payment carries it on to `paid` within a second or two. Accept either state
+# here (the route assertion below is the real decision check); the dedicated
+# journey-A-completion section then confirms it reaches `paid`.
 for i in $(seq 1 30); do
   STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
-  [ "$STATUS" = "approved" ] && break
+  { [ "$STATUS" = "approved" ] || [ "$STATUS" = "paid" ]; } && break
   sleep 1
 done
-[ "$STATUS" = "approved" ] || { echo "FAIL: expected approved, got $STATUS"; exit 1; }
+{ [ "$STATUS" = "approved" ] || [ "$STATUS" = "paid" ]; } \
+  || { echo "FAIL: expected approved or paid, got $STATUS"; exit 1; }
 ROUTE=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['route'])")
 [ "$ROUTE" = "auto_approve" ] || { echo "FAIL: route=$ROUTE"; exit 1; }
@@ -180,6 +204,23 @@ for i in $(seq 1 30); do
 done
 [ "$S2" = "duplicate" ] || { echo "FAIL: duplicate expected, got $S2"; exit 1; }
 echo "DECISION E2E: OK"
+
+echo "--- journey A completion: INV-1001 auto-approve -> paid (money moves) ---"
+for i in $(seq 1 30); do
+  STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$STATUS" = "paid" ] && break
+  sleep 1
+done
+[ "$STATUS" = "paid" ] || { echo "FAIL: expected paid, got $STATUS"; exit 1; }
+curl -sf http://localhost:8001/api/dashboard | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+paid_auto = d.get('paid_auto_cents')
+assert paid_auto == 4200, f'expected paid_auto_cents=4200, got {paid_auto!r}: {d}'
+print('dashboard paid_auto_cents == 4200: OK')
+"
+echo "JOURNEY A (paid): OK"
 
 echo "=== curl http://localhost:8002/api/config/thresholds ==="
 curl -sf http://localhost:8002/api/config/thresholds | grep -q 25000 \
@@ -211,6 +252,9 @@ for i in $(seq 1 30); do
   [ "$S3" = "pending_approval" ] && break; sleep 1
 done
 [ "$S3" = "pending_approval" ] || { echo "FAIL: expected pending_approval, got $S3"; exit 1; }
+for i in $(seq 1 45); do
+  curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" && break; sleep 2
+done
 curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" || { echo "FAIL: not in queue"; exit 1; }
 
 echo "--- restarting approval-svc (the M11 moment) ---"
@@ -258,6 +302,15 @@ docker compose restart approval-svc-dapr
 for i in $(seq 1 30); do
   curl -sf http://localhost:8003/healthz >/dev/null 2>&1 && break; sleep 1
 done
+# /healthz is a static handler — it passing does NOT mean the restarted sidecar
+# has reconnected to Redis yet, but the queue endpoint (which reads Dapr state)
+# needs that. Poll the queue itself: the escalation was durably written to Redis
+# BEFORE the restart, so if it were truly lost no amount of polling recovers it;
+# this only waits out the sidecar's reconnect, then still fails hard if absent.
+for i in $(seq 1 30); do
+  curl -sf http://localhost:8003/api/approvals/queue 2>/dev/null | grep -q "$TRACK3" && break
+  sleep 1
+done
 curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" \
   || { echo "FAIL: queue lost across restart — M11 broken"; exit 1; }
 
@@ -271,6 +324,157 @@ for i in $(seq 1 30); do
 done
 [ "$S3" = "approved" ] || { echo "FAIL: resume did not reach intake, got $S3"; exit 1; }
 echo "APPROVAL E2E (M11 restart survived): OK"
+
+echo "--- journey D (INV-1012): human-approved -> injected payment failure -> compensation ---"
+D_PAYLOAD=$(python3 - <<'EOF'
+import json
+data = json.load(open("sample-invoices.json"))
+inv = next(f for f in data["fixtures"] if f["id"] == "INV-1012")
+# KEEP scenario: payment-svc's failure injection is double-gated on
+# FAILURE_INJECTION_ENABLED=true (compose env) AND this fixture's
+# scenario startswith "payment-failure" -- journey D needs it to ride the
+# invoice dict all the way through decision-made/approval-resolved.
+inv = {k: v for k, v in inv.items() if k != "expected"}
+print(json.dumps(inv))
+EOF
+)
+
+ENG_BEFORE=$(curl -sf http://localhost:8004/api/budgets/engineering-2026Q2 \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['remaining_cents'])")
+echo "engineering-2026Q2 remaining before journey D: $ENG_BEFORE cents"
+
+TRACK_D=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+  -d "$D_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
+for i in $(seq 1 30); do
+  SD=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_D" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$SD" = "pending_approval" ] && break
+  sleep 1
+done
+[ "$SD" = "pending_approval" ] || { echo "FAIL: journey D expected pending_approval, got $SD"; exit 1; }
+# intake and approval both consume decision-made independently; intake can flip
+# to pending_approval before approval finishes writing the escalation + queue
+# index, so poll the queue rather than single-shot grep.
+for i in $(seq 1 45); do
+  curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK_D" && break
+  sleep 2  # space out: the queue GET self-heals every id, and hammering it
+           # starves approval-svc's event loop from creating this escalation
+done
+curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK_D" \
+  || { echo "FAIL: journey D invoice not in approval queue"; exit 1; }
+
+curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK_D/verdict" \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"capital hardware approved"}' \
+  >/dev/null || { echo "FAIL: journey D verdict rejected"; exit 1; }
+
+for i in $(seq 1 30); do
+  SD=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_D" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  [ "$SD" = "payment_failed" ] && break
+  sleep 1
+done
+[ "$SD" = "payment_failed" ] || { echo "FAIL: journey D expected payment_failed, got $SD"; exit 1; }
+
+ENG_AFTER=$(curl -sf http://localhost:8004/api/budgets/engineering-2026Q2 \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['remaining_cents'])")
+# Reservation was released on compensation -- assert unchanged relative to
+# the pre-journey-D snapshot, NOT the raw seeded total: engineering-2026Q2
+# already absorbed INV-1001's $42.00 payment (journey A, above), so the
+# live remaining is seeded-minus-4200, not the fixture's seeded value.
+[ "$ENG_AFTER" = "$ENG_BEFORE" ] \
+  || { echo "FAIL: engineering budget changed by journey D: before=$ENG_BEFORE after=$ENG_AFTER"; exit 1; }
+echo "JOURNEY D (compensated, engineering remaining unchanged at $ENG_AFTER cents): OK"
+
+echo "--- INV-1014A/B concurrency: no-overspend on marketing-2026Q2 (\$1,000 budget, two \$600 claims) ---"
+A_PAYLOAD=$(python3 - <<'EOF'
+import json
+data = json.load(open("sample-invoices.json"))
+inv = next(f for f in data["fixtures"] if f["id"] == "INV-1014A")
+inv = {k: v for k, v in inv.items() if k not in ("expected", "scenario")}
+print(json.dumps(inv))
+EOF
+)
+B_PAYLOAD=$(python3 - <<'EOF'
+import json
+data = json.load(open("sample-invoices.json"))
+inv = next(f for f in data["fixtures"] if f["id"] == "INV-1014B")
+inv = {k: v for k, v in inv.items() if k not in ("expected", "scenario")}
+print(json.dumps(inv))
+EOF
+)
+
+TRACK_A=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+  -d "$A_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
+TRACK_B=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+  -d "$B_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
+
+for TRK in "$TRACK_A" "$TRACK_B"; do
+  S14=""
+  for i in $(seq 1 30); do
+    S14=$(curl -sf "http://localhost:8001/api/invoices/$TRK" \
+      | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+    [ "$S14" = "pending_approval" ] && break
+    sleep 1
+  done
+  [ "$S14" = "pending_approval" ] || { echo "FAIL: $TRK expected pending_approval, got $S14"; exit 1; }
+done
+# Poll until BOTH are in the queue (approval writes the escalation slightly
+# after intake flips status; see journey D note).
+for i in $(seq 1 45); do
+  Q=$(curl -sf http://localhost:8003/api/approvals/queue)
+  echo "$Q" | grep -q "$TRACK_A" && echo "$Q" | grep -q "$TRACK_B" && break
+  sleep 2
+done
+Q=$(curl -sf http://localhost:8003/api/approvals/queue)
+echo "$Q" | grep -q "$TRACK_A" || { echo "FAIL: $TRACK_A not in approval queue"; exit 1; }
+echo "$Q" | grep -q "$TRACK_B" || { echo "FAIL: $TRACK_B not in approval queue"; exit 1; }
+
+# Approve BOTH in parallel (background curl): the race we care about is
+# INSIDE payment-svc's budget CAS loop, not in how fast this shell issues
+# two sequential requests -- firing them concurrently gives the saga its
+# best chance to actually contend.
+curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK_A/verdict" \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"booth deposit"}' \
+  >/dev/null &
+PID_A=$!
+curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK_B/verdict" \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"booth balance"}' \
+  >/dev/null &
+PID_B=$!
+wait "$PID_A" || { echo "FAIL: verdict A rejected"; exit 1; }
+wait "$PID_B" || { echo "FAIL: verdict B rejected"; exit 1; }
+
+SA="" SB=""
+for i in $(seq 1 30); do
+  SA=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_A" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  SB=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_B" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  case "$SA,$SB" in
+    paid,payment_failed|payment_failed,paid) break ;;
+  esac
+  sleep 1
+done
+if { [ "$SA" = "paid" ] && [ "$SB" = "payment_failed" ]; } \
+  || { [ "$SA" = "payment_failed" ] && [ "$SB" = "paid" ]; }; then
+  echo "exactly one paid, one payment_failed: A=$SA B=$SB"
+else
+  echo "FAIL: expected exactly one paid + one payment_failed, got A=$SA B=$SB"; exit 1
+fi
+
+MKT_REMAINING=$(curl -sf http://localhost:8004/api/budgets/marketing-2026Q2 \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['remaining_cents'])")
+[ "$MKT_REMAINING" = "40000" ] \
+  || { echo "FAIL: marketing-2026Q2 remaining expected 40000, got $MKT_REMAINING"; exit 1; }
+echo "INV-1014A/B (no-overspend, marketing-2026Q2 remaining=$MKT_REMAINING cents): OK"
+
+echo "--- AOF sanity ---"
+docker compose exec -T redis redis-cli CONFIG GET appendonly | grep -q yes \
+  || { echo "FAIL: redis appendonly not enabled"; exit 1; }
+echo "AOF SANITY: OK"
 
 echo "=== docker compose down ==="
 docker compose down

@@ -96,15 +96,21 @@ class TestQueueView:
         assert first["escalatedAt"] == "2024-01-01T00:00:00+00:00"
         assert first["status"] == "pending"
 
-    async def test_queue_self_heals_missing_ids(self, env):
+    async def test_queue_skips_but_does_not_evict_unreadable_ids(self, env):
+        # A record that reads as None is AMBIGUOUS under eventual consistency
+        # (transient read-after-write miss vs genuinely gone). It must be
+        # skipped from the view but NOT evicted from the index — evicting on a
+        # transient blip would permanently strand a pending escalation (a real
+        # bug the Phase 05 payment smoke surfaced: a legitimately-pending
+        # escalation vanished from the queue after a transient 204 read).
         client, repo, _ = env
-        await repo.add_to_queue("inv-ghost")  # index entry, no backing record
+        await repo.add_to_queue("inv-ghost")  # index entry, momentarily no readable record
         await seed(repo, make_escalation("inv-real", "2024-01-01T00:00:00+00:00"))
 
         resp = client.get("/api/approvals/queue")
         items = resp.json()["items"]
-        assert [i["invoiceId"] for i in items] == ["inv-real"]
-        assert await repo.list_queue() == ["inv-real"]
+        assert [i["invoiceId"] for i in items] == ["inv-real"]  # ghost skipped from view
+        assert set(await repo.list_queue()) == {"inv-ghost", "inv-real"}  # but NOT evicted
 
     async def test_queue_self_heals_non_pending_ids(self, env):
         client, repo, _ = env
@@ -148,6 +154,29 @@ class TestVerdict:
         # I3: usd_cents rides the approval-resolved event so payment (Phase 05)
         # can size the budget reservation without re-querying.
         assert payload["usd_cents"] == 50000
+        # scenario/department default to "" when the seeded escalation
+        # doesn't set them (pre-Phase-05 shape).
+        assert payload["scenario"] == ""
+        assert payload["department"] == ""
+
+    async def test_verdict_publish_carries_scenario_and_department(self, env):
+        """Phase 05: scenario (harness marker) and department (budget owner)
+        must ride the published approval-resolved payload, sourced from the
+        escalation record (populated by from_decision from the decision-made
+        payload)."""
+        client, repo, published = env
+        await seed(repo, make_escalation(
+            "inv-1", "2024-01-01T00:00:00+00:00",
+            scenario="payment-failure:journey-D", department="engineering-2026Q2",
+        ))
+
+        resp = client.post("/api/approvals/inv-1/verdict",
+                           json={"verdict": "approved", "approver_id": "lena"})
+        assert resp.status_code == 200
+
+        payload = published[0][1]
+        assert payload["scenario"] == "payment-failure:journey-D"
+        assert payload["department"] == "engineering-2026Q2"
 
     async def test_verdict_needs_info_variant(self, env):
         client, repo, published = env

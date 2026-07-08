@@ -1,6 +1,9 @@
 services:
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -117,3 +120,43 @@ services:
     depends_on:
       approval-svc:
         condition: service_healthy
+
+  payment-svc:
+    build:
+      context: .
+      dockerfile: services/payment/Dockerfile
+    ports:
+      - "8004:8000"
+    environment:
+      FAILURE_INJECTION_ENABLED: "true"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  payment-svc-dapr:
+    image: daprio/daprd:1.15.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "payment-svc",
+        "--app-port", "8000",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components",
+        "--placement-host-address", "placement:50006",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+      - ./dapr/secrets.json:/dapr/secrets.json:ro
+    network_mode: "service:payment-svc"
+    depends_on:
+      payment-svc:
+        condition: service_healthy
+
+volumes:
+  redis-data:

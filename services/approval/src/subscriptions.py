@@ -49,8 +49,8 @@ handler disambiguates on the existing record's status:
   So this reopens the record: a CAS transform flips it back to `pending`,
   clears the resolved_* fields, and refreshes the decision fields
   (usd_cents/route_violations/recommendation/confidence/reasoning/
-  escalated_at) from THIS payload -- then it's re-queued like any other
-  pending escalation. If the CAS loses a race (the record moved off
+  scenario/department/escalated_at) from THIS payload -- then it's
+  re-queued like any other pending escalation. If the CAS loses a race (the record moved off
   needs_info between the `get` and the transform), the transform raises
   `AlreadyResolved` and the handler just acks -- nothing to reopen.
 - `approved`/`rejected`: genuinely terminal. Human review is done and it
@@ -100,6 +100,8 @@ def _reopen_transform(payload: DecisionMadePayload) -> Callable[[Escalation], Es
             "recommendation": payload.recommendation,
             "confidence": payload.confidence,
             "reasoning": payload.reasoning,
+            "scenario": payload.scenario,
+            "department": payload.department,
             "escalated_at": payload.meta.occurred_at,
             "resolved_at": None,
             "resolved_by": None,

@@ -95,10 +95,20 @@ async def get_queue(repo: ApprovalRepo = Depends(get_repo)) -> dict:
     escalations = []
     for invoice_id in ids:
         esc = await repo.get(invoice_id)
-        if esc is None or esc.status != EscalationStatus.pending:
-            log.warning(
-                "self-healing: removing invoice_id=%s from queue (missing or non-pending)",
-                invoice_id)
+        if esc is None:
+            # A None read is AMBIGUOUS under the state store's eventual
+            # consistency: it may be a transient read-after-write miss on a
+            # record that was just written (observed live: a GET returning 204
+            # immediately followed by 200 for the same key). Evicting here would
+            # permanently strand a genuinely-pending escalation on a transient
+            # blip, so we only skip it from THIS view and leave the index alone —
+            # a later poll re-reads it. Eviction is reserved for records that
+            # definitively read back as resolved (below).
+            log.info("queue view: invoice_id=%s not readable this pass; skipped, not evicted",
+                     invoice_id)
+            continue
+        if esc.status != EscalationStatus.pending:
+            log.warning("self-healing: removing invoice_id=%s from queue (resolved)", invoice_id)
             await repo.remove_from_queue(invoice_id)
             continue
         escalations.append(esc)
@@ -153,6 +163,8 @@ async def submit_verdict(invoice_id: str, body: VerdictRequest,
         approver_id=body.approver_id,
         comment=body.comment,
         usd_cents=resolved.usd_cents,
+        scenario=resolved.scenario,
+        department=resolved.department,
     )
     try:
         await publisher(TOPIC_APPROVAL_RESOLVED, payload.model_dump())

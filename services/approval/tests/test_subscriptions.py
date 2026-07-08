@@ -86,6 +86,8 @@ def decision_payload(
     route: str = "human_review",
     event_id: str | None = None,
     correlation_id: str = "corr-1",
+    scenario: str = "",
+    department: str = "",
 ) -> dict:
     meta = new_event_meta(invoice_id, correlation_id)
     if event_id is not None:
@@ -99,6 +101,8 @@ def decision_payload(
         reasoning="High value and policy violation",
         usd_cents=50000,
         ceiling_cents=25000,
+        scenario=scenario,
+        department=department,
     ).model_dump()
 
 
@@ -302,7 +306,10 @@ async def test_needs_info_reopens_to_pending_refreshed_and_requeued(env):
     client, repo, _dedupe = env
     app.dependency_overrides[deps.get_publisher] = lambda: _noop_publish
 
-    first = decision_payload("inv-8", event_id="evt-8a")
+    first = decision_payload(
+        "inv-8", event_id="evt-8a",
+        scenario="payment-failure:journey-D", department="engineering-2026Q2",
+    )
     resp = client.post("/events/decision-made", json=cloudevent(first))
     assert resp.status_code == 200
     assert await repo.list_queue() == ["inv-8"]
@@ -325,6 +332,8 @@ async def test_needs_info_reopens_to_pending_refreshed_and_requeued(env):
         reasoning="Resubmitted with new evidence",
         usd_cents=60000,
         ceiling_cents=25000,
+        scenario="payment-failure:journey-D-retry",
+        department="engineering-2026Q2",
     ).model_dump()
     resp2 = client.post("/events/decision-made", json=cloudevent(second))
     assert resp2.status_code == 200
@@ -336,6 +345,10 @@ async def test_needs_info_reopens_to_pending_refreshed_and_requeued(env):
     assert stored.recommendation == "Escalate again"
     assert stored.confidence == 0.9
     assert stored.reasoning == "Resubmitted with new evidence"
+    # scenario/department are part of the refresh: reopen must pick up the
+    # NEW payload's values, not stay pinned to the original escalation's.
+    assert stored.scenario == "payment-failure:journey-D-retry"
+    assert stored.department == "engineering-2026Q2"
     assert stored.resolved_at is None
     assert stored.resolved_by is None
     assert stored.resolution_comment == ""
