@@ -152,8 +152,6 @@ async def test_post_append_failure_500s_forgets_and_redelivery_records_once():
     mark, so Dapr redelivers -- and because append/append_auto_approval are
     idempotent by content, the redelivery records EXACTLY ONE trail entry and ONE
     index row, never two."""
-    import pytest
-
     from afcommon.dedupe import EventDedupe
     from afcommon.state import InMemoryStateStore
 
