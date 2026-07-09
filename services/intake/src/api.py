@@ -6,7 +6,8 @@ from afcommon.events import TOPIC_INVOICE_SUBMITTED, new_event_meta
 from afcommon.logging import correlation_id_var, invoice_id_var
 from fastapi import APIRouter, Depends, HTTPException
 
-from .deps import Publisher, get_publisher, get_repo
+from .audit_client import AuditInvokeClient
+from .deps import Publisher, get_audit_client, get_publisher, get_repo
 from .models import InvoiceRecord, InvoiceStatus, InvoiceSubmission, touch
 from .repo import IntakeRepo
 
@@ -62,11 +63,24 @@ async def submit(submission: InvoiceSubmission,
 
 
 @router.get("/invoices/{invoice_id}")
-async def get_status(invoice_id: str, repo: IntakeRepo = Depends(get_repo)) -> dict:
+async def get_status(invoice_id: str, trail: bool = False,
+                     repo: IntakeRepo = Depends(get_repo),
+                     audit: AuditInvokeClient = Depends(get_audit_client)) -> dict:
     record = await repo.get_record(invoice_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"unknown invoice {invoice_id}")
-    return _view(record)
+    view = _view(record)
+    if trail:
+        # M5 sync leg: enrich with the audit trail via Dapr service invocation.
+        # Best-effort at BOTH layers -- AuditInvokeClient catches transport
+        # errors, and this handler guards against anything else so the status
+        # response (the primary answer) never fails on trail enrichment.
+        try:
+            view["trail"] = await audit.fetch_trail(record.correlation_id)
+        except Exception:
+            log.warning("trail enrichment failed; returning status without trail")
+            view["trail"] = []
+    return view
 
 
 @router.put("/invoices/{invoice_id}", status_code=202)
