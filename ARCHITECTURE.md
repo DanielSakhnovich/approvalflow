@@ -119,12 +119,12 @@ moves money has an undo.
 ```mermaid
 stateDiagram-v2
     [*] --> started
-    started --> rejected_insufficient_budget: reserve() fails (budget can't cover)
-    started --> compensated: M12 re-check — auto & amount > ceiling (refuse, log.critical)
-    started --> compensated: amount <= 0 (invalid, never strand at started)
-    started --> reserved: reserve() ok (budget CAS decrement)
-    reserved --> paid: provider.execute() ok
-    reserved --> compensated: provider declines → release() the reservation
+    started --> rejected_insufficient_budget: reserve fails (budget cannot cover)
+    started --> compensated: M12 re-check — auto and amount over ceiling (refuse, log.critical)
+    started --> compensated: amount not positive (invalid, never strand at started)
+    started --> reserved: reserve ok (budget CAS decrement)
+    reserved --> paid: provider execute ok
+    reserved --> compensated: provider declines, release the reservation
     rejected_insufficient_budget --> [*]: payment-failed(compensated=false)
     compensated --> [*]: payment-failed(compensated=true)
     paid --> [*]: payment-completed

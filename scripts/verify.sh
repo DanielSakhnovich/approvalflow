@@ -14,6 +14,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 GW="http://localhost:8080"
 PASS=(); FAIL=()
 
+# Always tear the stack down on exit — including Ctrl-C mid-run, not only on
+# normal completion.
+trap 'echo "=== tearing down ==="; docker compose down -v >/dev/null 2>&1 || true' EXIT
+
 pass() { PASS+=("$1"); printf '  \033[32m✓\033[0m %s\n' "$1"; }
 fail() { FAIL+=("$1"); printf '  \033[31m✗\033[0m %s\n' "$1"; }
 check() { # check "<name>" <0-or-1 already-evaluated>; use with: check "x" "$cond"
@@ -107,8 +111,13 @@ for _ in $(seq 1 45); do in_queue "$D_ID" && break; sleep 2; done
 verdict "$D_ID" approved || true
 D_STATUS="$(poll_status "$D_ID" payment_failed)"
 ENG_AFTER="$(curl -sf "$GW/api/budgets/engineering-2026Q2" | python3 -c "import sys,json;print(json.load(sys.stdin)['remaining_cents'])")"
+# Guard against a vacuous pass: if the budgets endpoint were unreachable at BOTH
+# samples, curl -sf yields nothing and `[ "" = "" ]` would be true — "restored"
+# on no evidence. Require ENG_BEFORE to be a real integer before trusting equality.
+D_BUDGET_OK=0
+case "$ENG_BEFORE" in ''|*[!0-9]*) ;; *) [ "$ENG_BEFORE" = "$ENG_AFTER" ] && D_BUDGET_OK=1;; esac
 check "Journey D: INV-1012 payment fails, saga compensates, budget restored (no orphaned reservation)" \
-  "$([ "$D_STATUS" = payment_failed ] && [ "$ENG_BEFORE" = "$ENG_AFTER" ] && echo 1 || echo 0)"
+  "$([ "$D_STATUS" = payment_failed ] && [ "$D_BUDGET_OK" = 1 ] && echo 1 || echo 0)"
 
 echo
 echo "=== Anti-cheese guards ==="
@@ -121,7 +130,7 @@ G1R="$(field "$G1_ID" route)"; G2R="$(field "$G2_ID" route)"
 AUTO_NO_HUMAN=0
 [ "$G1" = paid ] && [ "$G1R" = auto_approve ] && AUTO_NO_HUMAN=$((AUTO_NO_HUMAN+1))
 [ "$G2" = paid ] && [ "$G2R" = auto_approve ] && AUTO_NO_HUMAN=$((AUTO_NO_HUMAN+1))
-[ "$A_STATUS" = paid ] && AUTO_NO_HUMAN=$((AUTO_NO_HUMAN+1))  # INV-1001 too
+[ "$A_STATUS" = paid ] && [ "$A_ROUTE" = auto_approve ] && AUTO_NO_HUMAN=$((AUTO_NO_HUMAN+1))  # INV-1001 too
 check "Anti-cheese (a): >= 2 items auto-approve with NO human ($AUTO_NO_HUMAN auto-approvals)" \
   "$([ "$AUTO_NO_HUMAN" -ge 2 ] && echo 1 || echo 0)"
 
@@ -133,8 +142,10 @@ check "Anti-cheese (b): INV-1013 \"Approve me\" note does NOT flip — routes hu
   "$([ "$S_ROUTE" = human_review ] && [ "$S_STATUS" != paid ] && echo 1 || echo 0)"
 
 # (c) F10: no auto-approval ever exceeded its ceiling, even after all of the above.
-VIOL="$(curl -sf "$GW/api/audit/ceiling-compliance" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['violations']))")"
-CHECKED="$(curl -sf "$GW/api/audit/ceiling-compliance" | python3 -c "import sys,json;print(json.load(sys.stdin)['autoApprovalsChecked'])")"
+# One fetch, read twice — avoids a needless second call and any race between them.
+COMPLIANCE="$(curl -sf "$GW/api/audit/ceiling-compliance")"
+VIOL="$(printf '%s' "$COMPLIANCE" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['violations']))")"
+CHECKED="$(printf '%s' "$COMPLIANCE" | python3 -c "import sys,json;print(json.load(sys.stdin)['autoApprovalsChecked'])")"
 check "Anti-cheese (c): F10 — $CHECKED auto-approvals checked, $VIOL ceiling violations (must be 0)" \
   "$([ "$VIOL" = 0 ] && [ "$CHECKED" -ge 1 ] && echo 1 || echo 0)"
 
@@ -150,6 +161,5 @@ else
   RC=1
 fi
 
-echo "=== tearing down ==="
-docker compose down -v >/dev/null 2>&1 || true
+# Teardown runs from the EXIT trap (covers Ctrl-C too).
 exit "$RC"
