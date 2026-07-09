@@ -86,7 +86,8 @@ async def get_status(invoice_id: str, trail: bool = False,
     return view
 
 
-@router.put("/invoices/{invoice_id}", status_code=202)
+@router.put("/invoices/{invoice_id}", status_code=202,
+           dependencies=[Depends(require_role("submitter", "admin"))])
 async def resubmit(invoice_id: str, submission: InvoiceSubmission,
                    repo: IntakeRepo = Depends(get_repo),
                    publisher: Publisher = Depends(get_publisher)) -> dict:
