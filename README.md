@@ -29,7 +29,25 @@ Interactive version: open [`docs/service-maps.html`](docs/service-maps.html) in 
 docker compose up --build
 ```
 
-### Try it
+### Use the app
+
+Open **http://localhost:8080** — the nginx gateway is the single entry point (M6): it serves the React UI and proxies `/api/*` to the services, so this one port drives the whole system.
+
+The UI (M7) has six tabs:
+- **Submit** — prefill from any shipped fixture (INV-1001…INV-1019) and submit; get a tracking id back instantly.
+- **Status** — watch an invoice reach its decision, expand its audit trail (F9), and resubmit after a send-back (F5).
+- **Approver queue** — the escalated items only, each with the agent's recommendation, confidence, and cited rules; approve / reject / send back (F4/F5).
+- **Dashboard** — throughput, auto-vs-human rates, money moved (F8).
+- **Thresholds** — tune the autonomy policy at runtime, no redeploy (F7).
+- **Compliance** — prove no auto-approval ever exceeded its ceiling (F10).
+
+A quick demo: Submit → pick `INV-1001` → Submit (auto-approves → paid); pick `INV-1003` → Submit (escalates) → Approver queue → Approve.
+
+### Try it via curl (per-service ports, for debugging)
+
+The gateway is the real entry point; the per-service host ports below are for debugging.
+
+Submit an invoice:
 
 Submit an invoice:
 ```
