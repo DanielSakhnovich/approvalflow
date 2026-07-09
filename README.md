@@ -1,7 +1,33 @@
 # ApprovalFlow — Invoice & Expense Approval Platform
 
-AI-assisted, microservice invoice/expense approval (course capstone). WIP.
-Design: `docs/superpowers/specs/2026-07-03-approvalflow-design.md` · Decisions: `decisions.md`.
+An AI-assisted, microservice platform that ingests invoices asynchronously, has an AI agent
+judge each against company policy, **auto-approves the low-risk majority** and **escalates the
+risky minority to a human** — then runs approved items through a payment saga with compensation,
+auditable end-to-end by one correlation id. Six services behind an nginx gateway, a React SPA,
+Dapr for pub/sub / state / secrets / service-invocation.
+
+**The load-bearing idea:** the agent only *recommends*; a deterministic router *decides* — which is
+what makes the autonomy ceiling provable (M12), not merely asserted.
+
+📐 **Architecture & diagrams:** [`ARCHITECTURE.md`](ARCHITECTURE.md) (component, sequence,
+payment-compensation) · **Every design decision with alternatives:** [`decisions.md`](decisions.md)
+(D-001…D-017) · **Design spec:** [`docs/superpowers/specs/2026-07-03-approvalflow-design.md`](docs/superpowers/specs/2026-07-03-approvalflow-design.md)
+
+## ✅ Verify it works — one command (D5)
+
+```
+make verify
+```
+
+Brings the whole stack up from cold, runs the **four acceptance journeys** and **three anti-cheese
+guards** through the gateway, prints a single **PASS/FAIL**, and exits non-zero on any failure:
+
+- **A** — INV-1001 auto-approves → **paid**, no human touched
+- **B** — INV-1003 escalates, **survives an approval-svc restart**, resumes to paid on approve (M11)
+- **C** — INV-1007 (a resubmission of INV-1001) short-circuits as **duplicate** — not paid twice (M10)
+- **D** — INV-1012 payment fails → saga **compensates**, budget restored (no orphaned reservation)
+- **Anti-cheese:** ≥2 items auto-approve with no human · an "Approve me" note in the payload does
+  **not** flip the decision (INV-1013 stays `human_review`) · F10: 0 ceiling violations after all of it
 
 ## System map
 
@@ -26,8 +52,12 @@ Interactive version: open [`docs/service-maps.html`](docs/service-maps.html) in 
 ## Run
 
 ```
-docker compose up --build
+make up          # docker compose up --build -d — the whole system
 ```
+
+Or `docker compose up --build`. Other targets: `make down` (stop + remove volumes), `make test`
+(the pytest suite), `make verify` (the D5 check above), `make smoke` (the developer end-to-end run
+that also characterizes the live Dapr stores). Run `make help` for the list.
 
 ### Use the app
 
@@ -127,9 +157,35 @@ Reused from the earlier screening task (its SMS-segmentation logic and tests com
 curl http://localhost:8006/notifications
 ```
 
+## API docs (OpenAPI / Swagger)
+
+Every service auto-serves its interactive OpenAPI docs (FastAPI). With the stack up, open Swagger UI
+or fetch the raw schema per service:
+
+| Service | Swagger UI | Schema |
+|---|---|---|
+| intake-api | http://localhost:8001/docs | `:8001/openapi.json` |
+| decision-svc | http://localhost:8002/docs | `:8002/openapi.json` |
+| approval-svc | http://localhost:8003/docs | `:8003/openapi.json` |
+| payment-svc | http://localhost:8004/docs | `:8004/openapi.json` |
+| audit-svc | http://localhost:8005/docs | `:8005/openapi.json` |
+| notification-svc | http://localhost:8006/docs | `:8006/openapi.json` |
+
+The gateway (`:8080`) is the single entry point for the app and `/api/*`; the per-service ports
+above are for docs and debugging.
+
 ## Test
 
 ```
+make test        # or, without make:
 pip install -r requirements-dev.txt -e libs/afcommon
 pytest
 ```
+
+## More
+
+- **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — component / sequence / payment-compensation diagrams,
+  cross-cutting concerns, the scaling path, and the honest residuals.
+- **[`decisions.md`](decisions.md)** — every architectural decision (D-001…D-017) with the
+  alternatives considered and why each was chosen.
+- **[`docs/DEMO-SCRIPT.md`](docs/DEMO-SCRIPT.md)** — a shot-by-shot walkthrough of the system.
