@@ -145,6 +145,24 @@ async def test_dapr_try_save_500_postgres_first_write_conflict_is_conflict():
     assert not await store.try_save("k", {"a": 1}, None)
 
 
+async def test_dapr_try_save_500_postgres_no_item_updated_is_conflict_in_etag_mode():
+    # Future-proofing per dapr/components-contrib#2773: some Postgres component
+    # versions can surface a real etag mismatch as 500 "no item was updated"
+    # (no "etag" substring) instead of a clean 409. Either way the conditional
+    # write was rejected, so try_save must return False (not raise), keeping
+    # cas_update's retry loop working across a component upgrade.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={"errorCode": "ERR_STATE_SAVE",
+                  "message": "failed saving state in state store statestore-audit: "
+                  "no item was updated"},
+        )
+
+    store = _dapr_store_with_transport(handler)
+    assert not await store.try_save("k", {"a": 1}, "some-stale-etag")
+
+
 async def test_dapr_try_save_500_first_write_infra_error_raises():
     # A real infra failure (e.g. Redis OOM, connection reset) wrapped by
     # Dapr's Redis component as "failed to set key %s: %w" but WITHOUT the

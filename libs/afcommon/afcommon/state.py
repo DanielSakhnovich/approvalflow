@@ -99,16 +99,23 @@ class DaprStateStore:
             #     reset by peer") falls through and raises instead of being
             #     treated as a conflict.
             #   - Postgres component (state.postgresql, the audit store per
-            #     D-017): characterized live in the Phase 06 compose smoke.
-            #     Stale-etag comes back as 409 (handled above). First-write-only
-            #     against an existing key comes back as 500 with the specific
-            #     signature "no item was updated" (the conditional write
-            #     affected zero rows). That phrase is emitted only for the
-            #     zero-rows-affected conflict, not for connection/infra errors
-            #     (which carry their own driver text), so it's a safe positive
-            #     signal, symmetric to Redis's "user_script".
+            #     D-017): EMPIRICALLY characterized against Dapr 1.15.4 in the
+            #     Phase 06 compose smoke (transcript prints the raw body).
+            #     Observed: stale-etag -> 409 (handled above); first-write-only
+            #     against an existing key -> 500 with "no item was updated" (the
+            #     conditional write affected zero rows). "no item was updated"
+            #     is the post-query row-count check, which only runs after the
+            #     query executes, so a connection/infra failure surfaces as
+            #     different driver text instead -- it's a safe positive signal.
+            #     Caveat (dapr/components-contrib#2773): some versions can also
+            #     emit "no item was updated" for a real ETAG mismatch instead of
+            #     a clean 409. 1.15.4 does not, but to stay correct across a
+            #     component upgrade we accept that phrase in BOTH etag modes:
+            #     either way it means the conditional write was rejected, which
+            #     is exactly what try_save's False return signals. Re-verify the
+            #     bodies (the smoke prints them) on any Dapr/component bump.
             body = resp.text.lower()
-            if etag is not None and "etag" in body:
+            if etag is not None and ("etag" in body or "no item was updated" in body):
                 return False
             if etag is None and (
                 ("failed to set key" in body and "user_script" in body)  # Redis

@@ -164,7 +164,15 @@ async def main():
     stale = await s.try_save('pg-char', {'n': 3}, etag)
     assert stale is False, 'stale-etag save must be rejected (got True)'
     print('PG-CHAR stale-etag correctly rejected -> try_save False')
-    # first-write-only against an existing key must be rejected
+    # first-write-only against an existing key: print the RAW component
+    # response so the 'no item was updated' signature afcommon relies on is
+    # independently visible in the transcript (mirrors the Redis CHAR blocks).
+    import httpx
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.post('http://localhost:3500/v1.0/state/statestore-audit',
+                         json=[{'key':'pg-char','value':{'n':9},
+                                'options':{'concurrency':'first-write'}}])
+        print(f'PG-CHAR raw first-write-only status={r.status_code} body={r.text!r}')
     fw = await s.try_save('pg-char', {'n': 4}, None)
     assert fw is False, 'first-write-only on existing key must be rejected (got True)'
     print('PG-CHAR first-write-only on existing key correctly rejected')
