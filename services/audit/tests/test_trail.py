@@ -100,10 +100,12 @@ async def test_concurrent_appends_for_one_cid_both_retained():
 async def test_ceiling_violations_empty_when_all_in_ceiling():
     trail = AuditTrail(InMemoryStateStore())
     await trail.append_auto_approval(
-        {"correlationId": "corr-1", "invoiceId": "inv-1", "usdCents": 100, "ceilingCents": 25000}
+        {"correlation_id": "corr-1", "invoice_id": "inv-1",
+         "usd_cents": 100, "ceiling_cents": 25000}
     )
     await trail.append_auto_approval(
-        {"correlationId": "corr-2", "invoiceId": "inv-2", "usdCents": 25000, "ceilingCents": 25000}
+        {"correlation_id": "corr-2", "invoice_id": "inv-2",
+         "usd_cents": 25000, "ceiling_cents": 25000}
     )
 
     assert await trail.ceiling_violations() == []
@@ -112,12 +114,12 @@ async def test_ceiling_violations_empty_when_all_in_ceiling():
 async def test_ceiling_violations_returns_the_bad_synthetic_entry():
     trail = AuditTrail(InMemoryStateStore())
     ok_entry = {
-        "correlationId": "corr-1", "invoiceId": "inv-1",
-        "usdCents": 100, "ceilingCents": 25000,
+        "correlation_id": "corr-1", "invoice_id": "inv-1",
+        "usd_cents": 100, "ceiling_cents": 25000,
     }
     bad_entry = {
-        "correlationId": "corr-2", "invoiceId": "inv-2",
-        "usdCents": 30000, "ceilingCents": 25000,
+        "correlation_id": "corr-2", "invoice_id": "inv-2",
+        "usd_cents": 30000, "ceiling_cents": 25000,
     }
     await trail.append_auto_approval(ok_entry)
     await trail.append_auto_approval(bad_entry)
@@ -130,12 +132,38 @@ async def test_auto_approval_count_reflects_index_size():
     trail = AuditTrail(InMemoryStateStore())
     assert await trail.auto_approval_count() == 0
     await trail.append_auto_approval(
-        {"correlationId": "corr-1", "invoiceId": "inv-1", "usdCents": 1, "ceilingCents": 2}
+        {"correlation_id": "corr-1", "invoice_id": "inv-1", "usd_cents": 1, "ceiling_cents": 2}
     )
     await trail.append_auto_approval(
-        {"correlationId": "corr-2", "invoiceId": "inv-2", "usdCents": 1, "ceilingCents": 2}
+        {"correlation_id": "corr-2", "invoice_id": "inv-2", "usd_cents": 1, "ceiling_cents": 2}
     )
     assert await trail.auto_approval_count() == 2
+
+
+async def test_ceiling_violations_reads_the_wire_contract_field_names():
+    """Guards the read/write seam: the index entry Task 2's subscriber builds
+    forwards DecisionMadePayload's real snake_case fields verbatim. Feeding a
+    payload-shaped dict must surface a breach -- if this read the wrong casing,
+    ceiling_violations would default both amounts to 0 (0 > 0 == False) and F10
+    would 'pass' vacuously for any input, hiding real overspends."""
+    from afcommon.contracts import DecisionMadePayload
+    from afcommon.events import new_event_meta
+
+    breach = DecisionMadePayload(
+        meta=new_event_meta("inv-9", "corr-9"),
+        route="auto_approve", recommendation="approve", confidence=0.95,
+        violations=[], reasoning="over ceiling but forced through",
+        usd_cents=30000, ceiling_cents=25000,
+    )
+    entry = {
+        "correlation_id": breach.meta.correlation_id,
+        "invoice_id": breach.meta.invoice_id,
+        "usd_cents": breach.usd_cents,
+        "ceiling_cents": breach.ceiling_cents,
+    }
+    trail = AuditTrail(InMemoryStateStore())
+    await trail.append_auto_approval(entry)
+    assert await trail.ceiling_violations() == [entry]
 
 
 # --- API tests (DI-overridden AuditTrail over InMemoryStateStore) ---------
@@ -180,7 +208,8 @@ async def test_get_trail_endpoint_returns_sorted_entries():
 async def test_ceiling_compliance_endpoint_empty_violations_is_the_f10_proof():
     trail = AuditTrail(InMemoryStateStore())
     await trail.append_auto_approval(
-        {"correlationId": "corr-1", "invoiceId": "inv-1", "usdCents": 100, "ceilingCents": 25000}
+        {"correlation_id": "corr-1", "invoice_id": "inv-1",
+         "usd_cents": 100, "ceiling_cents": 25000}
     )
     client = make_client(trail)
 
@@ -192,8 +221,8 @@ async def test_ceiling_compliance_endpoint_empty_violations_is_the_f10_proof():
 async def test_ceiling_compliance_endpoint_surfaces_a_violation():
     trail = AuditTrail(InMemoryStateStore())
     bad_entry = {
-        "correlationId": "corr-2", "invoiceId": "inv-2",
-        "usdCents": 30000, "ceilingCents": 25000,
+        "correlation_id": "corr-2", "invoice_id": "inv-2",
+        "usd_cents": 30000, "ceiling_cents": 25000,
     }
     await trail.append_auto_approval(bad_entry)
     client = make_client(trail)

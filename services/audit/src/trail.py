@@ -63,7 +63,13 @@ class AuditTrail:
         return len(await self._auto_approvals())
 
     async def ceiling_violations(self) -> list[dict]:
+        # Index entries carry the SAME snake_case field names as the wire
+        # contract (DecisionMadePayload.usd_cents / .ceiling_cents), so Task 2's
+        # subscriber can forward the payload fields verbatim. A missing amount
+        # defaulting to 0 gives 0 > 0 == False, i.e. it never fabricates a
+        # violation from malformed data -- absence fails safe toward "compliant"
+        # and the trail (source of truth) still holds the raw event.
         return [
             e for e in await self._auto_approvals()
-            if e.get("usdCents", 0) > e.get("ceilingCents", 0)
+            if e.get("usd_cents", 0) > e.get("ceiling_cents", 0)
         ]
