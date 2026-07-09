@@ -1,0 +1,14 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: statestore-audit
+spec:
+  type: state.postgresql
+  version: v1
+  metadata:
+    - name: connectionString
+      value: "host=postgres port=5432 user=approvalflow password=approvalflow dbname=approvalflow sslmode=disable"
+    - name: tableName
+      value: "audit_state"
+    - name: actorStateStore
+      value: "false"
