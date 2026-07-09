@@ -473,3 +473,100 @@ production path in ARCHITECTURE.md's scaling table.
   component must be characterized by Phase 06's smoke before the trail write path trusts it.
 - Budgets' durability rests on AOF everysec (worst case ~1s of acknowledged writes on a hard
   crash) — accepted for demo scope, documented for production.
+
+## D-018 — AuthN/AuthZ: self-signed JWT with per-endpoint roles, flag-gated (N1)
+
+**Date:** 2026-07-09 · **Status:** Accepted (Phase 09 extra)
+
+**Decision:** A shared `afcommon.auth` mints and verifies HS256 self-signed JWTs (claims `sub`,
+`role`, `exp`). `POST /api/auth/login` (in intake-api) issues a token for seeded demo users
+(submitter / approver / admin). A `require_role(*allowed)` FastAPI dependency enforces roles per
+endpoint: submitter → submit/status/resubmit, approver → queue/verdict, admin → `PUT
+/config/thresholds` (admin is allowed everywhere). Read-only telemetry (dashboard, budgets,
+audit/ceiling-compliance, GET thresholds) stays open. Enforcement is gated by `AUTH_ENABLED`
+(default **true** in compose); the graded `make verify` and `smoke` harnesses authenticate as admin
+and pass a bearer token, so the D5 run stays green **and** proves enforcement end-to-end.
+
+**Alternatives considered:** an external IdP / OAuth provider · a real user store with hashed
+passwords · no flag (auth always on) · session cookies instead of bearer tokens.
+
+**Advantages of the choice:**
+- Self-signed HS256 with a shared secret needs no new container or third-party dependency — fits the
+  demo scope and the "assume millions" story degrades to swapping the signing/validation for an IdP
+  behind the same `require_role` seam.
+- `AUTH_ENABLED` keeps the flagship graded artifact (`make verify`) authoritative: auth is real in
+  the run, but a flag exists to isolate auth from a pure-pipeline demo if ever needed.
+- One `afcommon` dependency enforces roles uniformly; algorithm is pinned to HS256 (no `none`/alg
+  confusion), the dev-default secret is unreachable while auth is on (fail-loud, M15-consistent).
+
+**Disadvantages accepted:**
+- Seeded demo users with plain-compared passwords — explicitly demo-only, not a production user
+  store (documented at the compare site).
+- The signing secret is a documented demo default in compose (overridable via env), not sourced from
+  a managed secret manager; the `dapr/secrets.json` entry is currently forward-looking, since
+  services read `JWT_SIGNING_SECRET` from env.
+
+## D-019 — RAG over the policy: per-rule chunking + local BM25, decision-only, flag-gated (N5)
+
+**Date:** 2026-07-09 · **Status:** Accepted (Phase 09 extra)
+
+**Decision:** decision-svc chunks `policy.md` one chunk per `rule_id`, then retrieves the relevant
+rules for an invoice via a category-prefix filter (a meals invoice always gets `MEAL-*` + `GLOBAL-*`)
+unioned with the top-k of a hand-rolled, dependency-free BM25 (k1=1.5, b=0.75) over line-item
+descriptions + notes. Only the retrieved rules enter the agent prompt; the retrieved `rule_id`s ride
+on the `decision-made` event (`retrieved_rules`) and onto the audit trail. Gated by `RAG_ENABLED`
+(default **true**); when off, the full policy is passed as before. **RAG never changes the router's
+decision** — it only narrows the LLM prompt and records provenance.
+
+**Alternatives considered:** embedding-model semantic retrieval (needs a model/container) · whole
+policy in the prompt every time (the baseline) · retrieval that also feeds the deterministic gates.
+
+**Advantages of the choice:**
+- Fully local, zero new dependencies or containers; the policy file is authored one-rule-per-row, so
+  chunking is exact. The scaling story swaps BM25 for embeddings behind the same `PolicyRetriever`
+  seam.
+- Structurally safe: `route_invoice()`'s signature never receives the policy text or retrieved
+  rules, so retrieval cannot widen the M12 ceiling — provable, not asserted.
+- `retrieved_rules` on the event gives the audit trail rule-level provenance (which rules the agent
+  was shown) at near-zero cost.
+
+**Disadvantages accepted:**
+- BM25 keyword retrieval can miss a semantically-relevant rule that shares no keywords; the
+  category-prefix filter is the safety net (the whole category's rules are always included), and
+  `RAG_ENABLED=false` is the full-policy fallback.
+- With the CI stub agent (which ignores the prompt), RAG's prompt-narrowing has no observable effect
+  on the decision — its value shows only on the real LLM path; the retrieved-ids provenance is
+  exercised regardless.
+
+## D-020 — Automated eval harness over labeled fixtures, in-process on the stub (B1)
+
+**Date:** 2026-07-09 · **Status:** Accepted (Phase 09 extra)
+
+**Decision:** `eval/run_eval.py` runs the 20 labeled fixtures through the **real** `DecisionPipeline`
+in-process (stub adapter, no compose), scores actual vs `expected.route` (strict equality), and
+writes a committed `eval/REPORT.md`: per-route accuracy, a confusion matrix, a per-fixture table, and
+a malicious-stub safety sweep (every non-auto fixture must stay non-auto under an always-approve
+agent). `make eval` and a CI job run it; it exits non-zero on any unexpected ceiling breach or an
+accuracy drop below the floor. The one documented exception — INV-1015 (MEAL-03 alcohol-only, no
+deterministic Gate-2 backstop) — is scoped to exactly the fixture the M12 adversarial suite already
+documents, named transparently in the report, and pinned by test both directions.
+
+**Alternatives considered:** an e2e eval through the full compose stack (slow, LLM-dependent) ·
+scoring only against a live model (non-deterministic, no CI signal) · no safety sweep (accuracy only).
+
+**Advantages of the choice:**
+- In-process on the stub is deterministic and fast enough for CI; it reuses the real gates
+  (`validate` + `route_invoice`), so it measures production logic, not a re-implementation. An
+  independent path (the M12 suite) agrees on the sole safety leak — cross-checked, not self-certified.
+- The committed report is the evidence base for the graded PRODUCT-DILEMMA.md; the safety sweep turns
+  the M12 "provable ceiling" claim into a repeatable, CI-enforced check.
+- Honest by construction: 100% stub accuracy is framed in the report as "the deterministic stub, not
+  a live model"; the accuracy floor is set to the real measured value, and the safety exemption is
+  exactly the one documented residual — no lenient matching, no over-broad exception.
+
+**Disadvantages accepted:**
+- The CI signal measures the stub, not the LLM; a real-model report must be regenerated manually
+  (documented at the top of REPORT.md).
+- The harness's in-memory repo fakes stand in for I/O; they return the real thresholds and reuse the
+  real fingerprint function, but a future change to real repo seeding could drift from what the
+  harness measures (noted for maintenance; no current divergence).
