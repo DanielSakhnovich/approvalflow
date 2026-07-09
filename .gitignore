@@ -18,3 +18,5 @@ review.md
 .superpowers/
 .claude/settings.local.json
 venv/
+ui/node_modules/
+ui/dist/
