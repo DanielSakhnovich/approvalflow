@@ -35,7 +35,12 @@ export function setToken(next: string | null): void {
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const resp = await fetch(`${BASE}${path}`, { headers, ...init });
+  // Spread init first, then let the computed headers win — so a caller-supplied
+  // init.headers can add headers but can never clobber Authorization/Content-Type.
+  const resp = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: { ...(init?.headers as Record<string, string> | undefined), ...headers },
+  });
   if (resp.status === 401) {
     setToken(null);
     unauthorizedListener?.();
