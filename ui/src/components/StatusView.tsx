@@ -6,6 +6,7 @@ export function StatusView({ initialId }: { initialId: string }) {
   const [view, setView] = useState<InvoiceView | null>(null);
   const [showTrail, setShowTrail] = useState(false);
   const [err, setErr] = useState("");
+  const [resubmitJson, setResubmitJson] = useState("");
 
   const load = async (withTrail: boolean) => {
     setErr("");
@@ -13,6 +14,18 @@ export function StatusView({ initialId }: { initialId: string }) {
       setView(await api.status(id, withTrail));
     } catch (e) {
       setView(null);
+      setErr(String(e));
+    }
+  };
+
+  const resubmit = async () => {
+    setErr("");
+    try {
+      const invoice = JSON.parse(resubmitJson);
+      await api.resubmit(id, invoice);
+      setResubmitJson("");
+      await load(showTrail);
+    } catch (e) {
       setErr(String(e));
     }
   };
@@ -97,6 +110,26 @@ export function StatusView({ initialId }: { initialId: string }) {
               ))}
               {view.trail.length === 0 && <li className="muted">no trail yet</li>}
             </ul>
+          )}
+
+          {view.status === "needs_info" && (
+            <div style={{ marginTop: 16, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+              <h2 style={{ fontSize: 16 }}>Sent back for more info (F5)</h2>
+              <p className="muted">
+                Paste the corrected invoice JSON and resubmit — the workflow resumes on this
+                same invoice ({id}) and re-evaluates.
+              </p>
+              <textarea
+                value={resubmitJson}
+                onChange={(e) => setResubmitJson(e.target.value)}
+                placeholder="corrected invoice JSON…"
+              />
+              <div style={{ marginTop: 8 }}>
+                <button className="primary" onClick={resubmit} disabled={!resubmitJson.trim()}>
+                  Resubmit
+                </button>
+              </div>
+            </div>
           )}
         </div>
       )}

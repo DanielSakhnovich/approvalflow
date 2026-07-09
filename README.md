@@ -48,8 +48,6 @@ A quick demo: Submit → pick `INV-1001` → Submit (auto-approves → paid); pi
 The gateway is the real entry point; the per-service host ports below are for debugging.
 
 Submit an invoice:
-
-Submit an invoice:
 ```
 curl -X POST http://localhost:8001/api/invoices \
   -H 'Content-Type: application/json' \

@@ -1,0 +1,6 @@
+**/node_modules
+ui/dist
+.venv
+__pycache__
+.git
+.superpowers
