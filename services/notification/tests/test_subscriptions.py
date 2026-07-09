@@ -123,9 +123,47 @@ def test_redelivered_event_notifies_once():
     assert len(spy.sent) == 1  # dedupe: one notification only
 
 
+def test_decision_reject_notifies():
+    client, spy = make_env()
+    client.post(f"/events/{TOPIC_DECISION_MADE}", json=cloudevent(_decision("reject")))
+    assert len(spy.sent) == 1
+
+
 def test_notifications_endpoint_lists_created():
     client, _ = make_env()
     client.post(f"/events/{TOPIC_PAYMENT_COMPLETED}", json=cloudevent(_paid()))
     resp = client.get("/notifications")
     assert resp.status_code == 200
     assert len(resp.json()) == 1
+
+
+def test_post_mark_failure_forgets_dedupe_so_redelivery_reprocesses():
+    """D-016 compensation (matches the sibling-service convention): if delivery
+    raises after the dedupe mark, the handler forgets the mark and 500s, so a
+    Dapr redelivery reprocesses instead of being swallowed as a duplicate."""
+    from afcommon.dedupe import EventDedupe
+
+    class FlakyProcessor:
+        def __init__(self):
+            self.calls = 0
+
+        async def send_one(self, n):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("provider blew up")
+            n.status = SENT
+
+    storage.clear()
+    flaky = FlakyProcessor()
+    dedupe = EventDedupe(InMemoryStateStore())
+    app.dependency_overrides[deps.get_processor] = lambda: flaky
+    app.dependency_overrides[deps.get_dedupe] = lambda: dedupe
+    client = TestClient(app, raise_server_exceptions=False)
+
+    ev = cloudevent(_paid())
+    first = client.post(f"/events/{TOPIC_PAYMENT_COMPLETED}", json=ev)
+    assert first.status_code == 500  # delivery failed → 500 for redelivery
+
+    second = client.post(f"/events/{TOPIC_PAYMENT_COMPLETED}", json=ev)  # redelivery
+    assert second.status_code == 200
+    assert flaky.calls == 2  # mark was forgotten, so the 2nd delivery actually ran
