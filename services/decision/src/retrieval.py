@@ -21,8 +21,12 @@ from collections import Counter
 
 # Matches a markdown table row's first two cells where the first cell is a
 # backtick-quoted rule id, e.g. "| `MEAL-01` | Personal/team meals ... |".
+# The text-capture group excludes `|` so this only matches genuine 2-column
+# rule rows -- it must NOT match 3+-column tables (e.g. the §6 "Autonomy
+# thresholds" table, whose rows are `| key | default | meaning |`), which
+# would otherwise leak pseudo-rule-ids like `AUTONOMY-CEILING`.
 _RULE_ROW_RE = re.compile(
-    r"^\|\s*`([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`\s*\|\s*(.+?)\s*\|\s*$",
+    r"^\|\s*`([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)`\s*\|\s*([^|]+?)\s*\|\s*$",
     re.MULTILINE,
 )
 

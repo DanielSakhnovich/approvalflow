@@ -22,12 +22,22 @@ _KNOWN_IDS = {
     "HW-02",
 }
 
+# The §5 "Global rules" table in policy.md, enumerated explicitly so the
+# exact-set check below fails if a stray chunk (e.g. an `AUTONOMY-*`
+# pseudo-rule leaking from the §6 3-column table) ever reappears.
+_GLOBAL_IDS = {
+    "GLOBAL-RECEIPT",
+    "GLOBAL-VENDOR",
+    "GLOBAL-FX",
+    "GLOBAL-DUP",
+    "GLOBAL-MATH",
+    "GLOBAL-FRAUD",
+}
+
 
 def test_chunk_policy_finds_all_known_rule_ids():
     chunks = chunk_policy(_POLICY_MD)
-    assert _KNOWN_IDS <= chunks.keys()
-    global_ids = {rid for rid in chunks if rid.startswith("GLOBAL")}
-    assert global_ids, "expected at least one GLOBAL-* rule id"
+    assert chunks.keys() == _KNOWN_IDS | _GLOBAL_IDS
 
 
 def test_chunk_policy_maps_rule_id_to_nonempty_text():
@@ -64,8 +74,12 @@ def test_retrieve_meals_invoice_includes_meal01_excludes_travel():
 
 
 def test_retrieve_ranks_alcohol_line_item_into_meal03():
+    # category is deliberately NOT "meals" (or anything MEAL-* prefixed) so
+    # the category-prefix filter cannot include MEAL-03 unconditionally --
+    # its presence in `selected` can only be explained by BM25 keyword
+    # scoring on the alcohol/wine line-item text.
     invoice = {
-        "category": "meals",
+        "category": "saas",
         "lineItems": [{"description": "Alcohol-only bar tab, wine and beer", "quantity": 1,
                         "unitPrice": 60.0}],
         "notes": "Alcohol-only receipt; exercising the reject route.",
