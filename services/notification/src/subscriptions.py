@@ -63,6 +63,12 @@ async def _compensate_forget(dedupe: EventDedupe, event_id: str) -> None:
 
 async def _notify(invoice_id: str, message: str,
                   processor: NotificationProcessor) -> None:
+    # NOTE: unlike audit's trail (idempotent by event_id), this is NOT
+    # idempotent-by-content: a post-mark failure -> forget -> redelivery would
+    # append a second notification. Unreachable today because the vendored
+    # send_one catches every provider error internally and never raises (so the
+    # forget path never fires). If a raising delivery path is ever added, guard
+    # add_notification by event_id first (mirror AuditTrail.append).
     n = storage.add_notification(_channel_for(invoice_id), message)
     await processor.send_one(n)
 
