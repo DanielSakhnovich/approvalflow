@@ -30,6 +30,22 @@ echo "=== curl http://localhost:8001/healthz ==="
 curl -sf http://localhost:8001/healthz
 echo
 
+# Authenticate once as admin (N1.4): intake/approval/decision now enforce
+# require_role, so every protected call below needs a bearer token. admin is
+# allowed on every protected route, so one token drives the whole smoke run.
+# Login directly against intake-api's own port -- the gateway isn't brought
+# into the picture until the very end of this script (the "gateway (M6)"
+# section), so earlier calls authenticate the same way they address every
+# other service this early: its own host port, not through :8080.
+echo "=== authenticating as admin ==="
+TOKEN=$(curl -sf -X POST http://localhost:8001/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin-demo-pw"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+[ -n "$TOKEN" ] || { echo "FAIL: could not obtain admin token"; exit 1; }
+AUTH=(-H "Authorization: Bearer $TOKEN")
+echo "admin token acquired"
+
 # Wait for payment-svc (and give its daprd sidecar a chance to register its
 # /dapr/subscribe topics) BEFORE any invoice is submitted below. Dapr's redis
 # pubsub component creates each app's consumer group at subscribe time; a
@@ -191,12 +207,12 @@ asyncio.run(main())
 echo "--- intake E2E ---"
 PAYLOAD='{"id":"INV-1001","submitter":"dana.cohen@northwind.example","department":"engineering-2026Q2","vendor":"Bistro 19","vendorKnown":true,"invoiceNumber":"NW-INV-7781","currency":"USD","category":"meals","attendees":1,"lineItems":[{"description":"Team lunch","quantity":1,"unitPrice":38.89}],"taxAmount":3.11,"total":42.0,"receiptPresent":true,"date":"2026-05-12","notes":"smoke"}'
 TRACKING=$(curl -sf -X POST http://localhost:8001/api/invoices \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$PAYLOAD" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
 echo "tracking: $TRACKING"
 
-STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" "${AUTH[@]}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
 [ "$STATUS" = "evaluating" ] || { echo "FAIL: expected evaluating, got $STATUS"; exit 1; }
 
@@ -235,23 +251,23 @@ echo "--- decision E2E (auto-approve through two services) ---"
 # here (the route assertion below is the real decision check); the dedicated
 # journey-A-completion section then confirms it reaches `paid`.
 for i in $(seq 1 30); do
-  STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+  STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" "${AUTH[@]}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   { [ "$STATUS" = "approved" ] || [ "$STATUS" = "paid" ]; } && break
   sleep 1
 done
 { [ "$STATUS" = "approved" ] || [ "$STATUS" = "paid" ]; } \
   || { echo "FAIL: expected approved or paid, got $STATUS"; exit 1; }
-ROUTE=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+ROUTE=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" "${AUTH[@]}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['route'])")
 [ "$ROUTE" = "auto_approve" ] || { echo "FAIL: route=$ROUTE"; exit 1; }
 curl -sf http://localhost:8001/api/dashboard | grep -q '"decided_auto_approve"' \
   || { echo "FAIL: dashboard missing decided_auto_approve"; exit 1; }
 # duplicate short-circuit across services: resubmit the same payload, expect duplicate
-TRACK2=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+TRACK2=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
 for i in $(seq 1 30); do
-  S2=$(curl -sf "http://localhost:8001/api/invoices/$TRACK2" \
+  S2=$(curl -sf "http://localhost:8001/api/invoices/$TRACK2" "${AUTH[@]}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   [ "$S2" = "duplicate" ] && break
   sleep 1
@@ -261,7 +277,7 @@ echo "DECISION E2E: OK"
 
 echo "--- journey A completion: INV-1001 auto-approve -> paid (money moves) ---"
 for i in $(seq 1 30); do
-  STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" \
+  STATUS=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING" "${AUTH[@]}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   [ "$STATUS" = "paid" ] && break
   sleep 1
@@ -299,17 +315,17 @@ inv = {k: v for k, v in inv.items() if k not in ("expected", "scenario")}
 print(json.dumps(inv))
 EOF
 )
-TRACK3=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+TRACK3=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$ESC_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
 for i in $(seq 1 30); do
-  S3=$(curl -sf "http://localhost:8001/api/invoices/$TRACK3" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  S3=$(curl -sf "http://localhost:8001/api/invoices/$TRACK3" "${AUTH[@]}" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   [ "$S3" = "pending_approval" ] && break; sleep 1
 done
 [ "$S3" = "pending_approval" ] || { echo "FAIL: expected pending_approval, got $S3"; exit 1; }
 for i in $(seq 1 45); do
-  curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" && break; sleep 2
+  curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}" | grep -q "$TRACK3" && break; sleep 2
 done
-curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" || { echo "FAIL: not in queue"; exit 1; }
+curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}" | grep -q "$TRACK3" || { echo "FAIL: not in queue"; exit 1; }
 
 echo "--- restarting approval-svc (the M11 moment) ---"
 # `docker compose restart approval-svc approval-svc-dapr` as a single command
@@ -362,18 +378,18 @@ done
 # BEFORE the restart, so if it were truly lost no amount of polling recovers it;
 # this only waits out the sidecar's reconnect, then still fails hard if absent.
 for i in $(seq 1 30); do
-  curl -sf http://localhost:8003/api/approvals/queue 2>/dev/null | grep -q "$TRACK3" && break
+  curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}" 2>/dev/null | grep -q "$TRACK3" && break
   sleep 1
 done
-curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK3" \
+curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}" | grep -q "$TRACK3" \
   || { echo "FAIL: queue lost across restart — M11 broken"; exit 1; }
 
 curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK3/verdict" \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"client name confirmed offline"}' >/dev/null \
   || { echo "FAIL: verdict rejected"; exit 1; }
 for i in $(seq 1 30); do
-  S3=$(curl -sf "http://localhost:8001/api/invoices/$TRACK3" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  S3=$(curl -sf "http://localhost:8001/api/invoices/$TRACK3" "${AUTH[@]}" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   [ "$S3" = "approved" ] && break; sleep 1
 done
 [ "$S3" = "approved" ] || { echo "FAIL: resume did not reach intake, got $S3"; exit 1; }
@@ -397,10 +413,10 @@ ENG_BEFORE=$(curl -sf http://localhost:8004/api/budgets/engineering-2026Q2 \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['remaining_cents'])")
 echo "engineering-2026Q2 remaining before journey D: $ENG_BEFORE cents"
 
-TRACK_D=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+TRACK_D=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$D_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
 for i in $(seq 1 30); do
-  SD=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_D" \
+  SD=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_D" "${AUTH[@]}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   [ "$SD" = "pending_approval" ] && break
   sleep 1
@@ -410,20 +426,20 @@ done
 # to pending_approval before approval finishes writing the escalation + queue
 # index, so poll the queue rather than single-shot grep.
 for i in $(seq 1 45); do
-  curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK_D" && break
+  curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}" | grep -q "$TRACK_D" && break
   sleep 2  # space out: the queue GET self-heals every id, and hammering it
            # starves approval-svc's event loop from creating this escalation
 done
-curl -sf http://localhost:8003/api/approvals/queue | grep -q "$TRACK_D" \
+curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}" | grep -q "$TRACK_D" \
   || { echo "FAIL: journey D invoice not in approval queue"; exit 1; }
 
 curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK_D/verdict" \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"capital hardware approved"}' \
   >/dev/null || { echo "FAIL: journey D verdict rejected"; exit 1; }
 
 for i in $(seq 1 30); do
-  SD=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_D" \
+  SD=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_D" "${AUTH[@]}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   [ "$SD" = "payment_failed" ] && break
   sleep 1
@@ -458,15 +474,15 @@ print(json.dumps(inv))
 EOF
 )
 
-TRACK_A=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+TRACK_A=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$A_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
-TRACK_B=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' \
+TRACK_B=$(curl -sf -X POST http://localhost:8001/api/invoices -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$B_PAYLOAD" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])")
 
 for TRK in "$TRACK_A" "$TRACK_B"; do
   S14=""
   for i in $(seq 1 30); do
-    S14=$(curl -sf "http://localhost:8001/api/invoices/$TRK" \
+    S14=$(curl -sf "http://localhost:8001/api/invoices/$TRK" "${AUTH[@]}" \
       | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
     [ "$S14" = "pending_approval" ] && break
     sleep 1
@@ -476,11 +492,11 @@ done
 # Poll until BOTH are in the queue (approval writes the escalation slightly
 # after intake flips status; see journey D note).
 for i in $(seq 1 45); do
-  Q=$(curl -sf http://localhost:8003/api/approvals/queue)
+  Q=$(curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}")
   echo "$Q" | grep -q "$TRACK_A" && echo "$Q" | grep -q "$TRACK_B" && break
   sleep 2
 done
-Q=$(curl -sf http://localhost:8003/api/approvals/queue)
+Q=$(curl -sf http://localhost:8003/api/approvals/queue "${AUTH[@]}")
 echo "$Q" | grep -q "$TRACK_A" || { echo "FAIL: $TRACK_A not in approval queue"; exit 1; }
 echo "$Q" | grep -q "$TRACK_B" || { echo "FAIL: $TRACK_B not in approval queue"; exit 1; }
 
@@ -489,12 +505,12 @@ echo "$Q" | grep -q "$TRACK_B" || { echo "FAIL: $TRACK_B not in approval queue";
 # two sequential requests -- firing them concurrently gives the saga its
 # best chance to actually contend.
 curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK_A/verdict" \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"booth deposit"}' \
   >/dev/null &
 PID_A=$!
 curl -sf -X POST "http://localhost:8003/api/approvals/$TRACK_B/verdict" \
-  -H 'Content-Type: application/json' \
+  -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d '{"verdict":"approved","approver_id":"lena.schmidt@northwind.example","comment":"booth balance"}' \
   >/dev/null &
 PID_B=$!
@@ -503,9 +519,9 @@ wait "$PID_B" || { echo "FAIL: verdict B rejected"; exit 1; }
 
 SA="" SB=""
 for i in $(seq 1 30); do
-  SA=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_A" \
+  SA=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_A" "${AUTH[@]}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
-  SB=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_B" \
+  SB=$(curl -sf "http://localhost:8001/api/invoices/$TRACK_B" "${AUTH[@]}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
   case "$SA,$SB" in
     paid,payment_failed|payment_failed,paid) break ;;
@@ -529,7 +545,7 @@ echo "--- audit trail (F9): full chain for journey A's INV-1001 ---"
 # Fetch the trail through intake's ?trail=true (which itself invokes audit via
 # Dapr, exercising the M5 leg too). Poll until the terminal event is recorded.
 for i in $(seq 1 30); do
-  TRAIL=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING?trail=true")
+  TRAIL=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING?trail=true" "${AUTH[@]}")
   echo "$TRAIL" | grep -q "payment-completed" && break
   sleep 2
 done
@@ -577,12 +593,12 @@ done
 curl -sf http://localhost:8080/ | grep -q 'id="root"' \
   || { echo "FAIL: gateway did not serve the UI"; exit 1; }
 # every service reachable THROUGH the gateway (not its own host port)
-curl -sf -X POST http://localhost:8080/api/invoices -H 'Content-Type: application/json' \
+curl -sf -X POST http://localhost:8080/api/invoices -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$PAYLOAD" | grep -q trackingId \
   || { echo "FAIL: submit via gateway"; exit 1; }
 curl -sf http://localhost:8080/api/dashboard | grep -q submitted \
   || { echo "FAIL: dashboard via gateway (intake)"; exit 1; }
-curl -sf http://localhost:8080/api/approvals/queue | grep -q items \
+curl -sf http://localhost:8080/api/approvals/queue "${AUTH[@]}" | grep -q items \
   || { echo "FAIL: approvals via gateway"; exit 1; }
 curl -sf http://localhost:8080/api/config/thresholds | grep -q ceiling_cents \
   || { echo "FAIL: config via gateway (decision)"; exit 1; }

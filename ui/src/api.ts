@@ -2,12 +2,44 @@
 // served by nginx, which also proxies /api/* to the services -- one entry point.
 
 const BASE = "/api";
+const TOKEN_STORAGE_KEY = "af_token";
+
+// N1: module-level bearer-token holder. Set on login, read by apiFetch on
+// every request, restored from localStorage on load so a page refresh
+// doesn't force a re-login.
+let token: string | null = localStorage.getItem(TOKEN_STORAGE_KEY);
+
+// Fired whenever apiFetch sees a 401 (missing/invalid/expired token) so the
+// app shell can drop back to the Login view regardless of which component
+// triggered the request. App.tsx registers/clears this on mount/unmount.
+type UnauthorizedListener = () => void;
+let unauthorizedListener: UnauthorizedListener | null = null;
+
+export function setUnauthorizedListener(listener: UnauthorizedListener | null): void {
+  unauthorizedListener = listener;
+}
+
+export function getToken(): string | null {
+  return token;
+}
+
+export function setToken(next: string | null): void {
+  token = next;
+  if (next) {
+    localStorage.setItem(TOKEN_STORAGE_KEY, next);
+  } else {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const resp = await fetch(`${BASE}${path}`, { headers, ...init });
+  if (resp.status === 401) {
+    setToken(null);
+    unauthorizedListener?.();
+  }
   if (!resp.ok) {
     let detail = resp.statusText;
     try {
@@ -64,7 +96,22 @@ export interface Compliance {
   violations: unknown[];
 }
 
+export interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  role: string;
+}
+
 export const api = {
+  login: async (username: string, password: string) => {
+    const res = await apiFetch<LoginResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    setToken(res.access_token);
+    return res;
+  },
+  logout: () => setToken(null),
   submit: (invoice: unknown) =>
     apiFetch<{ trackingId: string; correlationId: string; status: string }>(
       "/invoices",
