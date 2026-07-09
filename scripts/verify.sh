@@ -35,9 +35,9 @@ drop = {"expected"} if keep == "scenario" else {"expected", "scenario"}
 print(json.dumps({k: v for k, v in inv.items() if k not in drop}))
 PY
 }
-submit() { curl -sf -X POST "$GW/api/invoices" -H 'Content-Type: application/json' \
+submit() { curl -sf -X POST "$GW/api/invoices" -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "$1" | python3 -c "import sys,json; print(json.load(sys.stdin)['trackingId'])"; }
-field() { curl -sf "$GW/api/invoices/$1" \
+field() { curl -sf "$GW/api/invoices/$1" "${AUTH[@]}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('$2',''))"; }
 poll_status() { # poll_status <id> <target> [tries]
   local id="$1" target="$2" tries="${3:-40}" s=""
@@ -47,8 +47,8 @@ poll_status() { # poll_status <id> <target> [tries]
   done
   echo "$s"; return 1
 }
-in_queue() { curl -sf "$GW/api/approvals/queue" | grep -q "$1"; }
-verdict() { curl -sf -X POST "$GW/api/approvals/$1/verdict" -H 'Content-Type: application/json' \
+in_queue() { curl -sf "$GW/api/approvals/queue" "${AUTH[@]}" | grep -q "$1"; }
+verdict() { curl -sf -X POST "$GW/api/approvals/$1/verdict" -H 'Content-Type: application/json' "${AUTH[@]}" \
   -d "{\"verdict\":\"$2\",\"approver_id\":\"lena.schmidt@northwind.example\",\"comment\":\"verify\"}" \
   >/dev/null; }
 
@@ -65,6 +65,16 @@ for svc in intake-api decision-svc approval-svc payment-svc audit-svc notificati
     sleep 2
   done
 done
+echo
+
+# --- authenticate once as admin; admin is allowed on every protected route,
+# so a single token drives the whole harness (N1.4). ---
+echo "=== authenticating as admin ==="
+TOKEN="$(curl -sf -X POST "$GW/api/auth/login" -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin-demo-pw"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")"
+[ -n "$TOKEN" ] || { echo "FAIL: could not obtain admin token"; exit 1; }
+AUTH=(-H "Authorization: Bearer $TOKEN")
 echo
 
 echo "=== Journeys ==="

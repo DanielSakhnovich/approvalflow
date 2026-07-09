@@ -1,4 +1,4 @@
-.PHONY: help up down test smoke verify
+.PHONY: help up down test smoke verify eval
 
 help:  ## show the available targets
 	@echo "ApprovalFlow — make targets:"
@@ -7,6 +7,7 @@ help:  ## show the available targets
 	@echo "  make test    — run the unit + integration test suite (pytest)"
 	@echo "  make verify  — D5: one-command verification (4 journeys + anti-cheese), PASS/FAIL"
 	@echo "  make smoke   — the developer end-to-end run (also characterizes live Dapr stores)"
+	@echo "  make eval    — B1: labeled-fixture eval harness (stub adapter) -> eval/REPORT.md"
 
 up:  ## build and start the stack
 	docker compose up --build -d
@@ -22,3 +23,6 @@ verify:  ## D5 — the graded one-command verification
 
 smoke:  ## developer end-to-end run
 	bash scripts/smoke-compose.sh
+
+eval:  ## B1: labeled-fixture eval harness (stub adapter) -> eval/REPORT.md
+	python -m eval.run_eval

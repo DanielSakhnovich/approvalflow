@@ -1,6 +1,7 @@
 import logging
 import uuid
 
+from afcommon.auth import require_role
 from afcommon.contracts import InvoiceSubmittedPayload
 from afcommon.events import TOPIC_INVOICE_SUBMITTED, new_event_meta
 from afcommon.logging import correlation_id_var, invoice_id_var
@@ -37,7 +38,8 @@ async def _publish_submitted(publisher: Publisher, record: InvoiceRecord,
     await publisher(TOPIC_INVOICE_SUBMITTED, payload.model_dump())
 
 
-@router.post("/invoices", status_code=202)
+@router.post("/invoices", status_code=202,
+            dependencies=[Depends(require_role("submitter", "admin"))])
 async def submit(submission: InvoiceSubmission,
                  repo: IntakeRepo = Depends(get_repo),
                  publisher: Publisher = Depends(get_publisher)) -> dict:
@@ -62,7 +64,8 @@ async def submit(submission: InvoiceSubmission,
             "status": record.status}
 
 
-@router.get("/invoices/{invoice_id}")
+@router.get("/invoices/{invoice_id}",
+           dependencies=[Depends(require_role("submitter", "admin"))])
 async def get_status(invoice_id: str, trail: bool = False,
                      repo: IntakeRepo = Depends(get_repo),
                      audit: AuditInvokeClient = Depends(get_audit_client)) -> dict:
@@ -83,7 +86,8 @@ async def get_status(invoice_id: str, trail: bool = False,
     return view
 
 
-@router.put("/invoices/{invoice_id}", status_code=202)
+@router.put("/invoices/{invoice_id}", status_code=202,
+           dependencies=[Depends(require_role("submitter", "admin"))])
 async def resubmit(invoice_id: str, submission: InvoiceSubmission,
                    repo: IntakeRepo = Depends(get_repo),
                    publisher: Publisher = Depends(get_publisher)) -> dict:

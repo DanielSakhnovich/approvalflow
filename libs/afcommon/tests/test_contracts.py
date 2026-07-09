@@ -43,6 +43,29 @@ def test_decision_made_roundtrips_scenario_and_department():
     assert DecisionMadePayload.model_validate(d) == p
 
 
+def test_decision_made_retrieved_rules_defaults_to_empty_list():
+    p = DecisionMadePayload(
+        meta=_meta(), route="auto_approve", recommendation="approve",
+        confidence=0.93, violations=[], reasoning="In policy.",
+        usd_cents=4200, ceiling_cents=25000,
+    )
+    d = p.model_dump()
+    assert d["retrieved_rules"] == []
+    assert DecisionMadePayload.model_validate(d) == p
+
+
+def test_decision_made_roundtrips_retrieved_rules():
+    p = DecisionMadePayload(
+        meta=_meta(), route="human_review", recommendation="needs_review",
+        confidence=0.7, violations=["MEAL-01"], reasoning="Over per-attendee cap.",
+        usd_cents=9500, ceiling_cents=25000,
+        retrieved_rules=["MEAL-01", "MEAL-02", "GLOBAL-DUP"],
+    )
+    d = p.model_dump()
+    assert d["retrieved_rules"] == ["MEAL-01", "MEAL-02", "GLOBAL-DUP"]
+    assert DecisionMadePayload.model_validate(d) == p
+
+
 def test_decision_made_rejects_unknown_route():
     import pytest
     from pydantic import ValidationError

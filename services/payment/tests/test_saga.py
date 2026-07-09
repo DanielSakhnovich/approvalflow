@@ -138,6 +138,28 @@ async def test_ceiling_violation_on_auto_refuses_loudly_without_touching_budget(
     assert any("inv-3" in r.getMessage() for r in critical)
 
 
+async def test_ceiling_boundary_equal_to_ceiling_passes_and_pays():
+    """M12 layer 4 guard is a strict `>` (see saga.py step 2): an auto-routed
+    amount exactly EQUAL to ceiling_cents must NOT trip the ceiling refusal
+    -- it proceeds through reserve/execute/pay like any in-ceiling amount."""
+    saga, budgets, provider, publisher, _ = await _make_saga()
+    before = await budgets.get_remaining(_DEPT)
+
+    record = await saga.handle(
+        "inv-11", "corr-1", _DEPT, 100000, "",
+        auto_route=True, ceiling_cents=100000,
+    )
+
+    assert record.state == SagaState.paid
+    assert record.failure_reason is None
+    assert budgets.reserve_calls == 1
+    assert provider.execute_calls == 1
+    assert await budgets.get_remaining(_DEPT) == before - 100000
+
+    assert len(publisher.events) == 1
+    assert publisher.events[0][0] == "payment-completed"
+
+
 async def test_insufficient_budget_rejects_and_leaves_budget_unchanged():
     saga, budgets, provider, publisher, _ = await _make_saga()
     before = await budgets.get_remaining(_DEPT)

@@ -29,6 +29,12 @@ class DecisionMadePayload(BaseModel):
     # Budget owner for payment (Phase 05) to size/target its reservation
     # against. Defaults to "" so existing fixtures/tests keep passing.
     department: str = ""
+    # N5: rule_ids retrieved by the RAG policy retriever and used to narrow
+    # the agent's prompt (empty when RAG is off/unavailable or the invoice
+    # was a duplicate, since the agent -- and therefore retrieval -- is
+    # skipped entirely for duplicates). Additive/backward-compatible:
+    # defaults to [] so existing fixtures/tests keep passing.
+    retrieved_rules: list[str] = []
 
 
 class ApprovalResolvedPayload(BaseModel):

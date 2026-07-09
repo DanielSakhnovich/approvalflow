@@ -1,3 +1,4 @@
+from afcommon.auth import require_role
 from fastapi import APIRouter, Depends, HTTPException
 
 from .config import ConfigRepo, Thresholds
@@ -11,7 +12,7 @@ async def get_thresholds(repo: ConfigRepo = Depends(get_config_repo)) -> Thresho
     return await repo.get_thresholds()
 
 
-@router.put("/thresholds")
+@router.put("/thresholds", dependencies=[Depends(require_role("admin"))])
 async def update_thresholds(
     partial: dict, repo: ConfigRepo = Depends(get_config_repo)
 ) -> Thresholds:

@@ -34,6 +34,9 @@ services:
       dockerfile: services/intake/Dockerfile
     ports:
       - "8001:8000"
+    environment:
+      AUTH_ENABLED: "true"
+      JWT_SIGNING_SECRET: "${JWT_SIGNING_SECRET:-approvalflow-dev-demo-secret-change-me}"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
@@ -71,6 +74,8 @@ services:
       - "8002:8000"
     environment:
       AGENT_PROVIDER: stub
+      AUTH_ENABLED: "true"
+      JWT_SIGNING_SECRET: "${JWT_SIGNING_SECRET:-approvalflow-dev-demo-secret-change-me}"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
@@ -106,6 +111,9 @@ services:
       dockerfile: services/approval/Dockerfile
     ports:
       - "8003:8000"
+    environment:
+      AUTH_ENABLED: "true"
+      JWT_SIGNING_SECRET: "${JWT_SIGNING_SECRET:-approvalflow-dev-demo-secret-change-me}"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]

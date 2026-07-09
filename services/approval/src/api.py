@@ -51,6 +51,7 @@ Two endpoints:
 import logging
 from datetime import UTC, datetime
 
+from afcommon.auth import require_role
 from afcommon.contracts import ApprovalResolvedPayload, Verdict
 from afcommon.events import TOPIC_APPROVAL_RESOLVED, new_event_meta
 from fastapi import APIRouter, Depends, HTTPException
@@ -89,7 +90,8 @@ def _view(esc: Escalation) -> dict:
     }
 
 
-@router.get("/approvals/queue")
+@router.get("/approvals/queue",
+           dependencies=[Depends(require_role("approver", "admin"))])
 async def get_queue(repo: ApprovalRepo = Depends(get_repo)) -> dict:
     ids = await repo.list_queue()
     escalations = []
@@ -116,7 +118,8 @@ async def get_queue(repo: ApprovalRepo = Depends(get_repo)) -> dict:
     return {"items": [_view(e) for e in escalations]}
 
 
-@router.post("/approvals/{invoice_id}/verdict")
+@router.post("/approvals/{invoice_id}/verdict",
+            dependencies=[Depends(require_role("approver", "admin"))])
 async def submit_verdict(invoice_id: str, body: VerdictRequest,
                          repo: ApprovalRepo = Depends(get_repo),
                          publisher: Publisher = Depends(get_publisher)) -> dict:

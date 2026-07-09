@@ -10,7 +10,7 @@ extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["libs", "services"]
+testpaths = ["libs", "services", "eval"]
 filterwarnings = [
     # Starlette deprecates its httpx-based TestClient on newer versions; the migration
     # (httpx2) is a dependency decision, not something to fix per-test. Narrow match only.

@@ -182,10 +182,32 @@ pip install -r requirements-dev.txt -e libs/afcommon
 pytest
 ```
 
+## Extras
+
+Beyond the must-haves, the system ships four planned extras (see `decisions.md` D-018…D-020):
+
+- **Auth with roles (N1).** Log in at `POST /api/auth/login` (seeded demo users: `alice`/submitter,
+  `revi`/approver, `admin`/admin) to get a self-signed JWT; a shared `require_role` dependency
+  enforces roles per endpoint (submitter → submit/status/resubmit, approver → queue/verdict, admin →
+  thresholds). Enforcement is on by default in compose (`AUTH_ENABLED=true`); the UI shows a login
+  screen and `make verify` authenticates automatically. Read-only telemetry stays open.
+- **RAG over the policy (N5).** decision-svc chunks `policy.md` one chunk per `rule_id` and retrieves
+  only the relevant rules (category filter + local BM25, no embedding model) into the agent prompt;
+  the retrieved `rule_id`s ride on the decision event and audit trail. Toggle with `RAG_ENABLED`
+  (default true; false = full policy in prompt). Retrieval feeds only the agent's prompt — it can
+  never widen the M12 autonomy ceiling (the router never sees the policy text), which is what makes
+  the ceiling provable regardless of what the agent is shown.
+- **Eval harness (B1).** `make eval` runs the 20 labeled fixtures through the real decision pipeline
+  (stub adapter) and writes [`eval/REPORT.md`](eval/REPORT.md): per-route accuracy, a confusion
+  matrix, a per-fixture table, and a malicious-stub safety sweep (proving the ceiling holds). CI runs
+  it on every PR.
+- **Tests across layers + e2e in CI (N6).** Boundary coverage on the router and payment saga, and the
+  D5 `make verify` journeys run as a CI job on every PR (alongside `pytest` and the image build).
+
 ## More
 
 - **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — component / sequence / payment-compensation diagrams,
   cross-cutting concerns, the scaling path, and the honest residuals.
-- **[`decisions.md`](decisions.md)** — every architectural decision (D-001…D-017) with the
+- **[`decisions.md`](decisions.md)** — every architectural decision (D-001…D-020) with the
   alternatives considered and why each was chosen.
 - **[`docs/DEMO-SCRIPT.md`](docs/DEMO-SCRIPT.md)** — a shot-by-shot walkthrough of the system.
