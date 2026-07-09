@@ -89,6 +89,28 @@ curl http://localhost:8004/api/budgets/engineering-2026Q2
 
 Approved invoices flow to the payment saga which reserves department budget, pays (via mock provider), and compensates on failure. The compose smoke proves journey A (auto-approve → paid), journey D (INV-1012 injected failure → budget reservation released, no orphan), and INV-1014A/B (two $600 claims against a $1000 budget → exactly one pays, no overspend).
 
+#### Audit service
+
+Every event lands in an immutable, per-correlation-id trail on a **Postgres**-backed state store. Two auditor queries:
+
+```
+# F9 — the full decision trail for any invoice, via intake (which fetches it
+# from audit-svc through a Dapr service-invocation call — the one sync call, M5):
+curl "http://localhost:8001/api/invoices/<trackingId>?trail=true"
+
+# F10 — prove no auto-approval ever exceeded its ceiling (an empty violations
+# list over a non-zero checked count IS the proof):
+curl http://localhost:8005/audit/ceiling-compliance
+```
+
+#### Notification service
+
+Reused from the earlier screening task (its SMS-segmentation logic and tests come along unchanged) behind a Dapr subscriber. It turns outcome events into submitter-facing notifications delivered via mock email/SMS/push providers:
+
+```
+curl http://localhost:8006/notifications
+```
+
 ## Test
 
 ```
