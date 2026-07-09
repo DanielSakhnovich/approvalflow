@@ -81,6 +81,26 @@ async def test_1_duplicate_ignores_a_malicious_agent_entirely():
     assert d.route == "duplicate"
 
 
+def test_1_duplicate_wins_even_when_amount_exceeds_ceiling():
+    """Gate 1 short-circuits before branch 5's ceiling check ever runs: an
+    amount well over the effective ceiling must still route `duplicate` with
+    ONLY `GLOBAL-DUP` (no `AUTONOMY-CEILING` mixed in), while
+    `effective_ceiling_cents` is still the correctly-computed value (the
+    ceiling computation runs unconditionally before the duplicate check,
+    even though this route never gates on it)."""
+    d = route_invoice(
+        duplicate=True,
+        validation=_validation(usd_cents=999_999),
+        agent=_agent(),
+        thresholds=T,
+        trusted=False,
+        invoice=_invoice(),
+    )
+    assert d.route == "duplicate"
+    assert d.violations == ["GLOBAL-DUP"]
+    assert d.effective_ceiling_cents == 25000
+
+
 def test_1_duplicate_with_non_numeric_attendees_does_not_raise():
     """A meals invoice with a malformed `attendees` (e.g. the string "2")
     must not crash the ceiling computation even on the `duplicate` branch,
@@ -363,6 +383,51 @@ def test_5_trusted_uplift_travel_no_cap():
     )
     assert trusted.route == "auto_approve"
     assert trusted.effective_ceiling_cents == 40000
+
+
+def test_5_trusted_uplift_boundary_equal_to_uplifted_ceiling_passes():
+    """Boundary equality at the uplifted ceiling itself ($400.00, no cap for
+    travel): exactly the uplifted ceiling still auto-approves."""
+    d = route_invoice(
+        duplicate=False,
+        validation=_validation(usd_cents=40000),
+        agent=_agent(),
+        thresholds=T,
+        trusted=True,
+        invoice=_invoice(category="travel"),
+    )
+    assert d.route == "auto_approve"
+    assert d.effective_ceiling_cents == 40000
+
+
+def test_5_trusted_uplift_boundary_one_cent_over_escalates():
+    d = route_invoice(
+        duplicate=False,
+        validation=_validation(usd_cents=40001),
+        agent=_agent(),
+        thresholds=T,
+        trusted=True,
+        invoice=_invoice(category="travel"),
+    )
+    assert d.route == "human_review"
+    assert d.violations == ["AUTONOMY-CEILING"]
+    assert d.effective_ceiling_cents == 40000
+
+
+def test_5_saas_cap_boundary_equal_to_cap_passes():
+    """Boundary equality at the SaaS monthly cap ($200.00) itself: exactly
+    the cap still auto-approves (only one cent over escalates, per
+    `test_5_saas_cap_applies_even_under_base_ceiling`)."""
+    d = route_invoice(
+        duplicate=False,
+        validation=_validation(usd_cents=20000),
+        agent=_agent(),
+        thresholds=T,
+        trusted=False,
+        invoice=_invoice(category="saas"),
+    )
+    assert d.route == "auto_approve"
+    assert d.effective_ceiling_cents == 20000
 
 
 def test_5_trusted_but_capped_saas_stays_human():
