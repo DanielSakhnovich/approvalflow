@@ -125,6 +125,26 @@ async def test_dapr_try_save_500_first_write_conflict_body_is_conflict():
     assert not await store.try_save("k", {"a": 1}, None)
 
 
+async def test_dapr_try_save_500_postgres_first_write_conflict_is_conflict():
+    # Real body captured verbatim against a live Dapr Postgres sidecar
+    # (statestore-audit, Phase 06 compose smoke): a first-write-only save
+    # (etag=None) against an existing key comes back as 500 with the specific
+    # "no item was updated" signature (the conditional write affected zero
+    # rows). D-017's swap-is-config discipline: characterized before trusted.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={
+                "errorCode": "ERR_STATE_SAVE",
+                "message": "failed saving state in state store statestore-audit: "
+                "no item was updated",
+            },
+        )
+
+    store = _dapr_store_with_transport(handler)
+    assert not await store.try_save("k", {"a": 1}, None)
+
+
 async def test_dapr_try_save_500_first_write_infra_error_raises():
     # A real infra failure (e.g. Redis OOM, connection reset) wrapped by
     # Dapr's Redis component as "failed to set key %s: %w" but WITHOUT the

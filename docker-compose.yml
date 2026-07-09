@@ -172,6 +172,78 @@ services:
       payment-svc:
         condition: service_healthy
 
+  audit-svc:
+    build:
+      context: .
+      dockerfile: services/audit/Dockerfile
+    ports:
+      - "8005:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  audit-svc-dapr:
+    image: daprio/daprd:1.15.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "audit-svc",
+        "--app-port", "8000",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components",
+        "--placement-host-address", "placement:50006",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+      - ./dapr/secrets.json:/dapr/secrets.json:ro
+    network_mode: "service:audit-svc"
+    depends_on:
+      audit-svc:
+        condition: service_healthy
+
+  notification-svc:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    ports:
+      - "8006:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  notification-svc-dapr:
+    image: daprio/daprd:1.15.4
+    command:
+      [
+        "./daprd",
+        "--app-id", "notification-svc",
+        "--app-port", "8000",
+        "--dapr-http-port", "3500",
+        "--resources-path", "/components",
+        "--placement-host-address", "placement:50006",
+      ]
+    volumes:
+      - ./dapr/components:/components:ro
+      - ./dapr/secrets.json:/dapr/secrets.json:ro
+    network_mode: "service:notification-svc"
+    depends_on:
+      notification-svc:
+        condition: service_healthy
+
 volumes:
   redis-data:
   postgres-data:

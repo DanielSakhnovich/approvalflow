@@ -39,14 +39,20 @@ echo
 # payment-svc is already subscribed by the time decision-svc later publishes
 # decision-made for it -- the same ordering hazard that would otherwise
 # silently strand journey A short of `paid`.
-echo "=== waiting for payment-svc to become healthy ==="
-for i in $(seq 1 30); do
-  status="$(docker compose ps payment-svc --format '{{.Health}}' 2>/dev/null || true)"
-  if [ "$status" = "healthy" ]; then
-    echo "payment-svc is healthy (after ${i}x2s)"
-    break
-  fi
-  sleep 2
+# All event consumers must be subscribed BEFORE the first invoice flows, or a
+# redis-pubsub consumer group created after publish misses the message (same
+# cold-run ordering hazard as payment-svc). audit-svc + notification-svc are
+# leaf consumers, so wait for every consumer here up front.
+for svc in payment-svc audit-svc notification-svc; do
+  echo "=== waiting for $svc to become healthy ==="
+  for i in $(seq 1 30); do
+    status="$(docker compose ps "$svc" --format '{{.Health}}' 2>/dev/null || true)"
+    if [ "$status" = "healthy" ]; then
+      echo "$svc is healthy (after ${i}x2s)"
+      break
+    fi
+    sleep 2
+  done
 done
 
 echo "=== intake-api-dapr placement log lines ==="
@@ -130,6 +136,46 @@ async def main():
     assert fw_ok is False, 'try_save(etag=None) must reject writes to an existing key'
 
     print('ETAG CHARACTERIZATION: DONE')
+
+asyncio.run(main())
+"
+
+# D-017 GATE: characterize the Postgres audit state component's CAS/ETag
+# behavior against afcommon's DaprStateStore -- exactly the discipline that
+# de-risked Redis above. The audit append path is a cas_update loop, so it
+# only trusts this component once first-write + stale-etag semantics are
+# confirmed live. Exec'd inside audit-svc (its sidecar mounts statestore-audit).
+echo "=== Postgres audit-store CAS characterization (exec'd inside audit-svc) ==="
+docker compose exec -T audit-svc python -c "
+import asyncio, sys
+sys.path.insert(0, '/opt/afcommon')
+from afcommon.state import DaprStateStore
+
+async def main():
+    s = DaprStateStore(store_name='statestore-audit')
+    # first-write on a fresh key
+    assert await s.try_save('pg-char', {'n': 1}, None), 'first write should succeed'
+    v, etag = await s.get('pg-char')
+    assert v == {'n': 1} and etag, ('unexpected read', v, etag)
+    print(f'PG-CHAR first-write ok, etag={etag!r}')
+    # fresh etag save succeeds
+    assert await s.try_save('pg-char', {'n': 2}, etag), 'fresh-etag save should succeed'
+    # stale etag (the original) must now be rejected
+    stale = await s.try_save('pg-char', {'n': 3}, etag)
+    assert stale is False, 'stale-etag save must be rejected (got True)'
+    print('PG-CHAR stale-etag correctly rejected -> try_save False')
+    # first-write-only against an existing key must be rejected
+    fw = await s.try_save('pg-char', {'n': 4}, None)
+    assert fw is False, 'first-write-only on existing key must be rejected (got True)'
+    print('PG-CHAR first-write-only on existing key correctly rejected')
+    # append via cas_update (the real audit path) works end-to-end
+    from afcommon.state import cas_update
+    await cas_update(s, 'pg-list', lambda cur: (cur or []) + ['a'])
+    await cas_update(s, 'pg-list', lambda cur: (cur or []) + ['b'])
+    lst, _ = await s.get('pg-list')
+    assert lst == ['a', 'b'], ('cas append lost data', lst)
+    print('PG-CHAR cas_update append ok ->', lst)
+    print('POSTGRES CAS CHARACTERIZATION: OK')
 
 asyncio.run(main())
 "
@@ -470,6 +516,49 @@ MKT_REMAINING=$(curl -sf http://localhost:8004/api/budgets/marketing-2026Q2 \
 [ "$MKT_REMAINING" = "40000" ] \
   || { echo "FAIL: marketing-2026Q2 remaining expected 40000, got $MKT_REMAINING"; exit 1; }
 echo "INV-1014A/B (no-overspend, marketing-2026Q2 remaining=$MKT_REMAINING cents): OK"
+
+echo "--- audit trail (F9): full chain for journey A's INV-1001 ---"
+# Fetch the trail through intake's ?trail=true (which itself invokes audit via
+# Dapr, exercising the M5 leg too). Poll until the terminal event is recorded.
+for i in $(seq 1 30); do
+  TRAIL=$(curl -sf "http://localhost:8001/api/invoices/$TRACKING?trail=true")
+  echo "$TRAIL" | grep -q "payment-completed" && break
+  sleep 2
+done
+echo "$TRAIL" | grep -q "invoice-submitted" \
+  || { echo "FAIL: trail missing invoice-submitted"; exit 1; }
+echo "$TRAIL" | grep -q "decision-made" \
+  || { echo "FAIL: trail missing decision-made"; exit 1; }
+echo "$TRAIL" | grep -q "payment-completed" \
+  || { echo "FAIL: trail missing payment-completed"; exit 1; }
+echo "AUDIT TRAIL F9 (full chain: submitted -> decision -> paid): OK"
+
+echo "--- ?trail=true (M5 sync leg: intake -> audit via Dapr invoke) ---"
+TRAIL_LEN=$(echo "$TRAIL" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('trail',[])))")
+[ "$TRAIL_LEN" -ge 3 ] \
+  || { echo "FAIL: ?trail=true returned $TRAIL_LEN entries, expected >= 3"; exit 1; }
+echo "M5 SYNC LEG (?trail=true returned $TRAIL_LEN entries via Dapr invoke): OK"
+
+echo "--- ceiling compliance (F10): no auto-approval ever exceeded its ceiling ---"
+COMPLIANCE=$(curl -sf http://localhost:8005/audit/ceiling-compliance)
+CHECKED=$(echo "$COMPLIANCE" | python3 -c "import sys,json; print(json.load(sys.stdin)['autoApprovalsChecked'])")
+VIOLATIONS=$(echo "$COMPLIANCE" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['violations']))")
+[ "$CHECKED" -ge 1 ] \
+  || { echo "FAIL: F10 checked $CHECKED auto-approvals, expected >= 1"; exit 1; }
+[ "$VIOLATIONS" = "0" ] \
+  || { echo "FAIL: F10 found $VIOLATIONS ceiling violations, expected 0"; exit 1; }
+echo "F10 (checked $CHECKED auto-approvals, 0 violations -- the empty list IS the proof): OK"
+
+echo "--- notification: submitters were told their outcomes ---"
+for i in $(seq 1 30); do
+  N=$(curl -sf http://localhost:8006/notifications \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(sum(1 for n in d if n.get('status')=='sent'))")
+  [ "${N:-0}" -ge 1 ] && break
+  sleep 2
+done
+[ "${N:-0}" -ge 1 ] \
+  || { echo "FAIL: no 'sent' notifications, expected >= 1"; exit 1; }
+echo "NOTIFICATION (>=1 outcome delivered, $N sent): OK"
 
 echo "--- AOF sanity ---"
 docker compose exec -T redis redis-cli CONFIG GET appendonly | grep -q yes \

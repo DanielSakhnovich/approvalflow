@@ -98,10 +98,22 @@ class DaprStateStore:
             #     signature (e.g. "failed to set key app||k: connection
             #     reset by peer") falls through and raises instead of being
             #     treated as a conflict.
+            #   - Postgres component (state.postgresql, the audit store per
+            #     D-017): characterized live in the Phase 06 compose smoke.
+            #     Stale-etag comes back as 409 (handled above). First-write-only
+            #     against an existing key comes back as 500 with the specific
+            #     signature "no item was updated" (the conditional write
+            #     affected zero rows). That phrase is emitted only for the
+            #     zero-rows-affected conflict, not for connection/infra errors
+            #     (which carry their own driver text), so it's a safe positive
+            #     signal, symmetric to Redis's "user_script".
             body = resp.text.lower()
             if etag is not None and "etag" in body:
                 return False
-            if etag is None and "failed to set key" in body and "user_script" in body:
+            if etag is None and (
+                ("failed to set key" in body and "user_script" in body)  # Redis
+                or "no item was updated" in body  # Postgres
+            ):
                 return False
             resp.raise_for_status()
         resp.raise_for_status()
