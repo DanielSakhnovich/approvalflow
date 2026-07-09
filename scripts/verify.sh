@@ -85,9 +85,13 @@ for _ in $(seq 1 30); do curl -sf http://localhost:8003/healthz >/dev/null 2>&1 
 QUEUE_SURVIVED=0
 for _ in $(seq 1 45); do in_queue "$B_ID" && { QUEUE_SURVIVED=1; break; }; sleep 2; done
 verdict "$B_ID" approved || true
-B_STATUS="$(poll_status "$B_ID" approved)"
-check "Journey B: INV-1003 escalates, survives an approval-svc RESTART, resumes on approve (M11)" \
-  "$([ "$QUEUE_SURVIVED" = 1 ] && [ "$B_STATUS" = approved ] && echo 1 || echo 0)"
+# INV-1003 carries no failure scenario and sales-2026Q2 has ample budget, so on
+# approval it flows past the transient `approved` hop through to `paid`. Poll for
+# `paid` (the true terminal state) rather than the racy intermediate `approved`:
+# it deterministically proves BOTH the M11 resume AND that payment completed.
+B_STATUS="$(poll_status "$B_ID" paid)"
+check "Journey B: INV-1003 escalates, survives an approval-svc RESTART, resumes to paid on approve (M11)" \
+  "$([ "$QUEUE_SURVIVED" = 1 ] && [ "$B_STATUS" = paid ] && echo 1 || echo 0)"
 
 # Journey C — duplicate paid once (INV-1007 = same vendor+number+total as INV-1001).
 C_ID="$(submit "$(payload INV-1007)")"
