@@ -568,6 +568,41 @@ done
   || { echo "FAIL: no 'sent' notifications, expected >= 1"; exit 1; }
 echo "NOTIFICATION (>=1 outcome delivered, $N sent): OK"
 
+echo "--- gateway (M6): single entry point routes /api/* + serves the UI ---"
+# wait for the gateway to be up
+for i in $(seq 1 30); do
+  curl -sf http://localhost:8080/ >/dev/null 2>&1 && break; sleep 2
+done
+# UI served at root (the SPA mount point)
+curl -sf http://localhost:8080/ | grep -q 'id="root"' \
+  || { echo "FAIL: gateway did not serve the UI"; exit 1; }
+# every service reachable THROUGH the gateway (not its own host port)
+curl -sf -X POST http://localhost:8080/api/invoices -H 'Content-Type: application/json' \
+  -d "$PAYLOAD" | grep -q trackingId \
+  || { echo "FAIL: submit via gateway"; exit 1; }
+curl -sf http://localhost:8080/api/dashboard | grep -q submitted \
+  || { echo "FAIL: dashboard via gateway (intake)"; exit 1; }
+curl -sf http://localhost:8080/api/approvals/queue | grep -q items \
+  || { echo "FAIL: approvals via gateway"; exit 1; }
+curl -sf http://localhost:8080/api/config/thresholds | grep -q ceiling_cents \
+  || { echo "FAIL: config via gateway (decision)"; exit 1; }
+curl -sf http://localhost:8080/api/budgets/engineering-2026Q2 | grep -q remaining_cents \
+  || { echo "FAIL: budgets via gateway (payment)"; exit 1; }
+curl -sf http://localhost:8080/api/audit/ceiling-compliance | grep -q autoApprovalsChecked \
+  || { echo "FAIL: audit via gateway (rewrite)"; exit 1; }
+curl -sf http://localhost:8080/api/notifications | grep -q '\[' \
+  || { echo "FAIL: notifications via gateway (rewrite)"; exit 1; }
+echo "GATEWAY (UI served + all 6 services routed via :8080): OK"
+
+echo "--- gateway rate limiting (M6) ---"
+RL=0
+for i in $(seq 1 80); do
+  code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/dashboard)
+  [ "$code" = "503" ] && { RL=1; break; }
+done
+[ "$RL" = "1" ] || { echo "FAIL: rate limit never triggered (expected a 503 under burst)"; exit 1; }
+echo "RATE LIMIT (limit_req returned 503 under burst): OK"
+
 echo "--- AOF sanity ---"
 docker compose exec -T redis redis-cli CONFIG GET appendonly | grep -q yes \
   || { echo "FAIL: redis appendonly not enabled"; exit 1; }

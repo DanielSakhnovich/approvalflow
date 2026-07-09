@@ -244,6 +244,26 @@ services:
       notification-svc:
         condition: service_healthy
 
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      intake-api:
+        condition: service_healthy
+      decision-svc:
+        condition: service_healthy
+      approval-svc:
+        condition: service_healthy
+      payment-svc:
+        condition: service_healthy
+      audit-svc:
+        condition: service_healthy
+      notification-svc:
+        condition: service_healthy
+
 volumes:
   redis-data:
   postgres-data:
