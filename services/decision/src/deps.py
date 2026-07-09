@@ -11,6 +11,7 @@ from .agents.stub import StubAgent
 from .config import ConfigRepo, _find_repo_file
 from .fingerprint import FingerprintRegistry
 from .pipeline import DecisionPipeline
+from .retrieval import PolicyRetriever, chunk_policy
 from .trust import TrustRepo
 
 _config_repo: ConfigRepo | None = None
@@ -83,6 +84,10 @@ async def get_pipeline() -> DecisionPipeline:
         fingerprints = FingerprintRegistry(DaprStateStore())
         agent = await _build_agent()
         policy_rules = _find_repo_file("policy.md").read_text()
+        # N5: `PolicyRetriever` built once from the same policy.md text --
+        # `policy_rules` (the full text) stays the fallback the pipeline
+        # falls back to when RAG_ENABLED is off or retrieval is unavailable.
+        retriever = PolicyRetriever(chunk_policy(policy_rules))
         _pipeline = DecisionPipeline(
             config=config,
             fingerprints=fingerprints,
@@ -90,5 +95,6 @@ async def get_pipeline() -> DecisionPipeline:
             agent=agent,
             publisher=publish,
             policy_rules=policy_rules,
+            retriever=retriever,
         )
     return _pipeline

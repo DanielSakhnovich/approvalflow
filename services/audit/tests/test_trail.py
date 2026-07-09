@@ -140,6 +140,37 @@ async def test_auto_approval_count_reflects_index_size():
     assert await trail.auto_approval_count() == 2
 
 
+async def test_append_records_retrieved_rules_from_a_decision_made_payload():
+    """N5.2: a real `DecisionMadePayload` with `retrieved_rules` populated
+    (the RAG-retrieved rule_ids narrowing the agent's prompt) must have that
+    field preserved verbatim on the stored trail entry -- the trail is the
+    audit record of what evidence a decision was based on, so dropping this
+    field would silently lose that provenance."""
+    from afcommon.contracts import DecisionMadePayload
+    from afcommon.events import new_event_meta
+
+    decision = DecisionMadePayload(
+        meta=new_event_meta("inv-rag-1", "corr-rag-1"),
+        route="auto_approve", recommendation="approve", confidence=0.92,
+        violations=[], reasoning="In policy for its category.",
+        usd_cents=4200, ceiling_cents=25000,
+        retrieved_rules=["MEAL-01", "MEAL-02", "GLOBAL-DUP"],
+    )
+    trail = AuditTrail(InMemoryStateStore())
+    entry = TrailEntry(
+        event_type="decision-made",
+        event_id=decision.meta.event_id,
+        occurred_at=decision.meta.occurred_at,
+        payload=decision.model_dump(),
+    )
+
+    await trail.append(decision.meta.correlation_id, entry)
+
+    got = await trail.get_trail(decision.meta.correlation_id)
+    assert len(got) == 1
+    assert got[0].payload["retrieved_rules"] == ["MEAL-01", "MEAL-02", "GLOBAL-DUP"]
+
+
 async def test_ceiling_violations_reads_the_wire_contract_field_names():
     """Guards the read/write seam: the index entry Task 2's subscriber builds
     forwards DecisionMadePayload's real snake_case fields verbatim. Feeding a

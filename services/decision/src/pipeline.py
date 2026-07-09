@@ -33,6 +33,7 @@ gate is traceable from those contextvars alone.
 """
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
 
 from afcommon.contracts import DecisionMadePayload, InvoiceSubmittedPayload
@@ -42,6 +43,7 @@ from .agent import DecisionAgent
 from .agents.handrolled import ProviderUnavailable
 from .config import ConfigRepo
 from .fingerprint import FingerprintRegistry
+from .retrieval import PolicyRetriever
 from .router import route_invoice
 from .trust import TrustRepo
 from .validators import validate
@@ -49,6 +51,14 @@ from .validators import validate
 log = logging.getLogger(__name__)
 
 Publisher = Callable[[str, dict], Awaitable[None]]
+
+
+def _rag_enabled() -> bool:
+    """N5: `RAG_ENABLED` gates whether the pipeline narrows the agent's
+    prompt via `PolicyRetriever`. Read at call time (not cached at process
+    start), mirroring afcommon.auth's `AUTH_ENABLED` pattern -- default
+    TRUE when unset (opt-out, unlike AUTH_ENABLED's opt-in default)."""
+    return os.environ.get("RAG_ENABLED", "true").strip().lower() != "false"
 
 
 class DecisionPipeline:
@@ -60,6 +70,7 @@ class DecisionPipeline:
         agent: DecisionAgent,
         publisher: Publisher,
         policy_rules: str,
+        retriever: PolicyRetriever | None = None,
     ):
         self._config = config
         self._fingerprints = fingerprints
@@ -67,6 +78,7 @@ class DecisionPipeline:
         self._agent = agent
         self._publisher = publisher
         self._policy_rules = policy_rules
+        self._retriever = retriever
 
     async def handle_submission(self, payload: InvoiceSubmittedPayload) -> DecisionMadePayload:
         invoice = payload.invoice
@@ -102,13 +114,26 @@ class DecisionPipeline:
         await self._trust.remember_invoice(invoice_id, vendor, category)
 
         # Agent: skipped entirely for duplicates (D-011) -- never called,
-        # not called-and-ignored.
+        # not called-and-ignored. Retrieval is likewise skipped for
+        # duplicates: there's no agent call for it to narrow the prompt for.
         recommendation = None
+        retrieved_rules: list[str] = []
         if duplicate:
             log.info("agent skipped: invoice_id=%s is a duplicate", invoice_id)
         else:
+            # N5: RAG narrows the prompt text handed to the agent but must
+            # NEVER change the router's decision -- only `policy_rules`
+            # (prompt content) and `retrieved_rules` (the audit record of
+            # what was retrieved) are affected by this branch.
+            policy_rules = self._policy_rules
+            if _rag_enabled() and self._retriever is not None:
+                retrieved_rules = self._retriever.retrieve(invoice)
+                policy_rules = self._retriever.render(retrieved_rules)
+                log.info(
+                    "retrieved rules: invoice_id=%s ids=%s", invoice_id, retrieved_rules,
+                )
             try:
-                recommendation = await self._agent.evaluate(invoice, self._policy_rules)
+                recommendation = await self._agent.evaluate(invoice, policy_rules)
                 log.info(
                     "agent: invoice_id=%s recommendation=%s confidence=%s",
                     invoice_id, recommendation.recommendation, recommendation.confidence,
@@ -141,6 +166,7 @@ class DecisionPipeline:
             ceiling_cents=decision.effective_ceiling_cents,
             scenario=invoice.get("scenario", "") or "",
             department=invoice.get("department", "") or "",
+            retrieved_rules=retrieved_rules,
         )
         await self._publisher(TOPIC_DECISION_MADE, result.model_dump())
         return result
