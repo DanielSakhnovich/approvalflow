@@ -34,13 +34,20 @@ class AuditTrail:
         self._store = store
 
     async def append(self, correlation_id: str, entry: TrailEntry) -> None:
-        # Append-only: the update fn only ever grows the list, and cas_update's
-        # retry loop re-reads on conflict so a concurrent append is never lost.
-        await cas_update(
-            self._store,
-            f"trail:{correlation_id}",
-            lambda current: (current or []) + [entry.model_dump()],
-        )
+        # Append-only AND idempotent by event_id: the update fn grows the list
+        # but skips an entry whose event_id is already present, so a redelivery
+        # (e.g. after a partial-failure forget elsewhere in the handler) replays
+        # as a safe no-op rather than double-recording the event. cas_update's
+        # retry loop re-reads on conflict, so the presence check runs against
+        # the freshly-read list each attempt -- a concurrent append is never
+        # lost and a duplicate is never written.
+        def add(current: list | None) -> list:
+            current = current or []
+            if any(e.get("event_id") == entry.event_id for e in current):
+                return current
+            return current + [entry.model_dump()]
+
+        await cas_update(self._store, f"trail:{correlation_id}", add)
 
     async def get_trail(self, correlation_id: str) -> list[TrailEntry]:
         value, _ = await self._store.get(f"trail:{correlation_id}")
@@ -49,11 +56,16 @@ class AuditTrail:
         return entries
 
     async def append_auto_approval(self, entry: dict) -> None:
-        await cas_update(
-            self._store,
-            _AUTO_APPROVAL_INDEX_KEY,
-            lambda current: (current or []) + [entry],
-        )
+        # Idempotent by invoice_id: an invoice auto-approves at most once, so a
+        # redelivery replay must not add a second index row (which would inflate
+        # the F10 checked count). Same safe-no-op-on-replay property as append().
+        def add(current: list | None) -> list:
+            current = current or []
+            if any(e.get("invoice_id") == entry.get("invoice_id") for e in current):
+                return current
+            return current + [entry]
+
+        await cas_update(self._store, _AUTO_APPROVAL_INDEX_KEY, add)
 
     async def _auto_approvals(self) -> list[dict]:
         value, _ = await self._store.get(_AUTO_APPROVAL_INDEX_KEY)

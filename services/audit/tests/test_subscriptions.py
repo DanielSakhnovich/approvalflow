@@ -143,3 +143,46 @@ def test_payment_failed_is_recorded():
     ).model_dump()
     resp = client.post(f"/events/{TOPIC_PAYMENT_FAILED}", json=cloudevent(failed))
     assert resp.status_code == 200
+
+
+async def test_post_append_failure_500s_forgets_and_redelivery_records_once():
+    """Plan Step-1 required test + the guard for the partial-failure double-append
+    bug: the auto-approval handler does TWO writes (trail entry, then the global
+    ceiling index). Fail the SECOND once; the handler 500s and forgets the dedupe
+    mark, so Dapr redelivers -- and because append/append_auto_approval are
+    idempotent by content, the redelivery records EXACTLY ONE trail entry and ONE
+    index row, never two."""
+    import pytest
+
+    from afcommon.dedupe import EventDedupe
+    from afcommon.state import InMemoryStateStore
+
+    real_trail = AuditTrail(InMemoryStateStore())
+    dedupe = EventDedupe(InMemoryStateStore())
+
+    calls = {"n": 0}
+    real_index = real_trail.append_auto_approval
+
+    async def flaky_index(entry: dict) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("index store hiccup")
+        await real_index(entry)
+
+    real_trail.append_auto_approval = flaky_index  # type: ignore[method-assign]
+
+    app.dependency_overrides[deps.get_trail] = lambda: real_trail
+    app.dependency_overrides[deps.get_dedupe] = lambda: dedupe
+    client = TestClient(app, raise_server_exceptions=False)
+
+    ev = cloudevent(_decision(route="auto_approve", eid="evt-aa", usd=4200, ceil=25000))
+    first = client.post(f"/events/{TOPIC_DECISION_MADE}", json=ev)
+    assert first.status_code == 500  # index write failed → 500 for redelivery
+
+    second = client.post(f"/events/{TOPIC_DECISION_MADE}", json=ev)  # Dapr redelivery
+    assert second.status_code == 200
+
+    # Exactly one trail entry and one index row despite the replayed first write.
+    entries = await real_trail.get_trail("corr-1")
+    assert len(entries) == 1
+    assert await real_trail.auto_approval_count() == 1

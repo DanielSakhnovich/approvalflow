@@ -12,9 +12,17 @@ mark so Dapr's redelivery reprocesses instead of hitting a stale mark.
 
 Carry from Phase 05: payment publishes its terminal events AFTER writing the
 saga marker, so a crash between marker and publish can drop a
-payment-completed/failed. The trail is append-only with per-event dedupe, so
-a missing event is a GAP, never a corruption -- audit tolerates gaps and does
-not assume exactly-once receipt.
+payment-completed/failed. The trail is append-only, so a missing event is a
+GAP, never a corruption -- audit tolerates gaps and does not assume
+exactly-once receipt.
+
+The handler makes TWO writes for an auto-approve decision (the trail entry
+and the ceiling index), so a failure of the second after the first succeeds,
+followed by forget+redelivery, would replay the first write. Both
+AuditTrail.append (idempotent by event_id) and append_auto_approval
+(idempotent by invoice_id) are therefore safe no-ops on replay -- the same
+idempotent-by-content discipline approval-svc uses for its save_new +
+add_to_queue pair -- so redelivery never double-records.
 """
 
 import logging
